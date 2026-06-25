@@ -66,7 +66,7 @@ export function requestToken({ prompt = 'consent' } = {}) {
       accessToken = resp.access_token;
       tokenExpiry = Date.now() + (Number(resp.expires_in || 3600) - 60) * 1000;
       gapi.client.setToken({ access_token: accessToken });
-      try { localStorage.setItem(LS_AUTH, '1'); } catch { /* ignore */ }
+      persistToken();
       emit();
       resolve(accessToken);
     };
@@ -78,14 +78,38 @@ export async function signIn() {
   await requestToken({ prompt: 'consent' });
 }
 
-// Remembers (locally) that the user has consented, so we can re-acquire a token silently.
-const LS_AUTH = 'ironlog.gauth';
-export function wasSignedIn() {
-  try { return localStorage.getItem(LS_AUTH) === '1'; } catch { return false; }
+// We persist the short-lived access token (and its expiry) locally so a page refresh stays
+// signed in for the token's ~1h lifetime — independent of third-party-cookie restrictions
+// that can break GIS silent (prompt:'') re-auth.
+const LS_TOKEN = 'ironlog.gtoken';
+function persistToken() {
+  try { localStorage.setItem(LS_TOKEN, JSON.stringify({ access_token: accessToken, expiry: tokenExpiry })); }
+  catch { /* ignore */ }
 }
 
-// On page load, try to get a fresh token WITHOUT a popup (uses the existing Google session
-// + prior consent). Resolves true if signed in, false if a real sign-in is still needed.
+export function wasSignedIn() {
+  try {
+    const t = JSON.parse(localStorage.getItem(LS_TOKEN) || 'null');
+    return !!(t && t.access_token);
+  } catch { return false; }
+}
+
+// Reuse a still-valid stored token on load (no Google interaction at all).
+export function restoreToken() {
+  if (typeof gapi === 'undefined' || !gapi.client) return false;
+  try {
+    const t = JSON.parse(localStorage.getItem(LS_TOKEN) || 'null');
+    if (!t || !t.access_token || !t.expiry || Date.now() >= t.expiry) return false;
+    accessToken = t.access_token;
+    tokenExpiry = t.expiry;
+    gapi.client.setToken({ access_token: accessToken });
+    emit();
+    return true;
+  } catch { return false; }
+}
+
+// Fallback when no valid stored token: try to get one WITHOUT a popup (existing Google
+// session + prior consent). Resolves true if signed in, false if a real sign-in is needed.
 export async function trySilentSignIn() {
   if (!wasSignedIn() || !ready()) return false;
   try { await requestToken({ prompt: '' }); return true; }
@@ -95,7 +119,7 @@ export async function trySilentSignIn() {
 export function signOut() {
   if (accessToken) google.accounts.oauth2.revoke(accessToken, () => {});
   accessToken = null; tokenExpiry = 0; spreadsheetId = null;
-  try { localStorage.removeItem(LS_AUTH); } catch { /* ignore */ }
+  try { localStorage.removeItem(LS_TOKEN); } catch { /* ignore */ }
   gapi.client.setToken(null);
   emit();
 }

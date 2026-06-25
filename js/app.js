@@ -15,6 +15,7 @@ DB.loadDb().then(() => Store.refresh());
 // keeps you signed in instead of prompting every time.
 G.init()
   .then(async () => {
-    if (await G.trySilentSignIn()) await Store.pullFromCloud();
+    // Reuse a stored token first (survives refresh); else try a silent (popup-less) re-auth.
+    if (G.restoreToken() || await G.trySilentSignIn()) await Store.pullFromCloud();
   })
   .catch((err) => console.warn('Google init failed:', err));

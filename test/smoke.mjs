@@ -20,6 +20,9 @@ if (!globalThis.crypto?.randomUUID) {
 }
 globalThis.fetch = async () => { throw new Error('no-net'); };
 window.Chart = undefined;
+// Minimal Google stubs so auth-token restore can be unit-tested without the real client.
+globalThis.gapi = { client: { setToken: () => {} } };
+globalThis.google = { accounts: { oauth2: { revoke: (_t, cb) => cb && cb() } } };
 
 let failures = 0, storyCount = 0;
 const assert = (cond, msg) => { if (!cond) { console.error('    ✗ ' + msg); failures++; } else console.log('    ✓ ' + msg); };
@@ -28,6 +31,7 @@ const story = (id, title) => { storyCount++; console.log(`\n${id}: ${title}`); }
 const Store = await import(APP + 'store.js');
 const UI = await import(APP + 'ui.js');
 const DB = await import(APP + 'exercise-db.js');
+const G = await import(APP + 'google.js');
 await DB.loadDb().catch(() => {});
 
 Store.init();
@@ -192,6 +196,14 @@ await Store.resetToDefaults();
 assert(Store.getState().days.length === 4, 'days reset to the 4 defaults');
 assert(Store.getState().sessions.length === 0, 'sessions cleared');
 assert(Store.getState().entries.length > 0 && Store.getState().entries[0].weights.length > 0, 're-seeded baseline weight vectors');
+
+story('US20', 'Staying signed in: a valid stored token is restored on load (no prompt)');
+localStorage.setItem('ironlog.gtoken', JSON.stringify({ access_token: 'tok', expiry: Date.now() + 3600000 }));
+assert(G.wasSignedIn() === true, 'remembers a prior sign-in');
+assert(G.restoreToken() === true && G.isSignedIn() === true, 'restores a still-valid token without interaction');
+localStorage.setItem('ironlog.gtoken', JSON.stringify({ access_token: 'tok', expiry: Date.now() - 1000 }));
+G.signOut();
+assert(G.restoreToken() === false && !G.isSignedIn(), 'expired/cleared token does not restore');
 
 console.log(`\n${storyCount} user stories — ${failures ? failures + ' CHECK(S) FAILED ❌' : 'all checks passed ✅'}`);
 process.exit(failures ? 1 : 0);

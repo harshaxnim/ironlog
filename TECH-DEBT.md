@@ -50,10 +50,15 @@ Images + metadata come from `free-exercise-db` via jsDelivr. The full DB is cach
 `localStorage` after first load (offline-friendly). User-added custom exercises (not from
 the library) have no image and no auto-alternatives until linked via search.
 
-## 8. Auth token is in-memory; silent re-auth on reload
-Access tokens aren't persisted (more secure). Instead, after the first sign-in we set a
-local `ironlog.gauth` flag and, on each load, call `trySilentSignIn()` (`prompt: ''`) to
-re-acquire a token without a popup using the existing Google session. A real prompt only
-reappears if that silent attempt fails (no Google session, consent revoked, or — in
-Testing-mode OAuth — the ~7-day expiry). Publishing the consent screen to production removes
-the weekly expiry.
+## 8. Auth: persisted access token + silent fallback
+To keep you signed in across refreshes, the access token + expiry are stored in
+`localStorage` (`ironlog.gtoken`) and reused on load while still valid (~1h) via
+`restoreToken()`. When it's expired/absent we fall back to `trySilentSignIn()` (`prompt:''`),
+then to an interactive sign-in. We persist the token (rather than relying only on GIS silent
+re-auth) because Chrome's third-party-cookie restrictions frequently break `prompt:''`.
+
+Trade-off: a bearer token in `localStorage` is exposed to any XSS on the page. Acceptable
+here — static single-user app, no untrusted input rendered unescaped, and the only scope is
+`drive.file` (just this app's own file). If the app ever takes third-party content, move to
+in-memory tokens or a backend. Note: Testing-mode OAuth still forces full re-consent ~weekly;
+publishing the consent screen to production removes that.
