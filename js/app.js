@@ -10,5 +10,11 @@ mount(document.getElementById('app'), document.getElementById('header'));
 // Load illustrations metadata (cached) — re-render once images/alternatives resolve.
 DB.loadDb().then(() => Store.refresh());
 
-// Initialise Google client in the background so "Sign in" is ready instantly.
-G.init().catch((err) => console.warn('Google init failed:', err));
+// Initialise Google client in the background so "Sign in" is ready instantly. If the user
+// signed in previously, silently re-acquire a token (no popup) and sync — so a page refresh
+// keeps you signed in instead of prompting every time.
+G.init()
+  .then(async () => {
+    if (await G.trySilentSignIn()) await Store.pullFromCloud();
+  })
+  .catch((err) => console.warn('Google init failed:', err));

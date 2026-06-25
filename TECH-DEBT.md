@@ -50,6 +50,10 @@ Images + metadata come from `free-exercise-db` via jsDelivr. The full DB is cach
 `localStorage` after first load (offline-friendly). User-added custom exercises (not from
 the library) have no image and no auto-alternatives until linked via search.
 
-## 8. Auth token is session-only
-Google access tokens aren't persisted across reloads (by design — more secure). You
-re-click "Sign in" after a hard refresh; it's a silent re-consent after the first time.
+## 8. Auth token is in-memory; silent re-auth on reload
+Access tokens aren't persisted (more secure). Instead, after the first sign-in we set a
+local `ironlog.gauth` flag and, on each load, call `trySilentSignIn()` (`prompt: ''`) to
+re-acquire a token without a popup using the existing Google session. A real prompt only
+reappears if that silent attempt fails (no Google session, consent revoked, or — in
+Testing-mode OAuth — the ~7-day expiry). Publishing the consent screen to production removes
+the weekly expiry.

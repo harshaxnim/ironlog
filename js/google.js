@@ -66,6 +66,7 @@ export function requestToken({ prompt = 'consent' } = {}) {
       accessToken = resp.access_token;
       tokenExpiry = Date.now() + (Number(resp.expires_in || 3600) - 60) * 1000;
       gapi.client.setToken({ access_token: accessToken });
+      try { localStorage.setItem(LS_AUTH, '1'); } catch { /* ignore */ }
       emit();
       resolve(accessToken);
     };
@@ -77,9 +78,24 @@ export async function signIn() {
   await requestToken({ prompt: 'consent' });
 }
 
+// Remembers (locally) that the user has consented, so we can re-acquire a token silently.
+const LS_AUTH = 'ironlog.gauth';
+export function wasSignedIn() {
+  try { return localStorage.getItem(LS_AUTH) === '1'; } catch { return false; }
+}
+
+// On page load, try to get a fresh token WITHOUT a popup (uses the existing Google session
+// + prior consent). Resolves true if signed in, false if a real sign-in is still needed.
+export async function trySilentSignIn() {
+  if (!wasSignedIn() || !ready()) return false;
+  try { await requestToken({ prompt: '' }); return true; }
+  catch { return false; }
+}
+
 export function signOut() {
   if (accessToken) google.accounts.oauth2.revoke(accessToken, () => {});
   accessToken = null; tokenExpiry = 0; spreadsheetId = null;
+  try { localStorage.removeItem(LS_AUTH); } catch { /* ignore */ }
   gapi.client.setToken(null);
   emit();
 }
