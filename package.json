@@ -1,0 +1,14 @@
+{
+  "name": "ironlog",
+  "version": "1.0.0",
+  "description": "Iron Log — workout tracker (static site, Google Sheets sync)",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "python3 -m http.server 8000",
+    "test": "node test/smoke.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^24.0.0"
+  }
+}
