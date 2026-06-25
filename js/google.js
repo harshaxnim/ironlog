@@ -17,6 +17,7 @@ let tokenExpiry = 0;
 let gapiReady = false;
 let gisReady = false;
 let spreadsheetId = null;
+let authResolved = false; // false until the initial token check finishes (drives the spinner)
 
 const listeners = new Set();
 export function onAuthChange(fn) { listeners.add(fn); return () => listeners.delete(fn); }
@@ -24,6 +25,31 @@ function emit() { for (const fn of listeners) fn(isSignedIn()); }
 
 export function isSignedIn() {
   return !!accessToken && Date.now() < tokenExpiry;
+}
+
+// True until the on-load token check completes — the header shows a spinner meanwhile so it
+// never flashes "Sign in" before flipping to "Sign out".
+export function authPending() { return !authResolved; }
+export function markAuthResolved() { if (!authResolved) { authResolved = true; emit(); } }
+
+// One-shot startup: init the client, reuse a stored token (or try silent), then resolve.
+// Returns true if signed in. Always marks auth resolved (clears the spinner) when done.
+export async function bootstrapAuth() {
+  try {
+    await init();
+    let signed = restoreToken();
+    if (!signed) {
+      signed = await Promise.race([
+        trySilentSignIn(),
+        new Promise((r) => { setTimeout(() => r(false), 4000); }), // don't spin forever
+      ]);
+    }
+    return signed;
+  } catch {
+    return false;
+  } finally {
+    markAuthResolved();
+  }
 }
 
 // --- script loading -------------------------------------------------------

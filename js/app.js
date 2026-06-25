@@ -10,12 +10,8 @@ mount(document.getElementById('app'), document.getElementById('header'));
 // Load illustrations metadata (cached) — re-render once images/alternatives resolve.
 DB.loadDb().then(() => Store.refresh());
 
-// Initialise Google client in the background so "Sign in" is ready instantly. If the user
-// signed in previously, silently re-acquire a token (no popup) and sync — so a page refresh
-// keeps you signed in instead of prompting every time.
-G.init()
-  .then(async () => {
-    // Reuse a stored token first (survives refresh); else try a silent (popup-less) re-auth.
-    if (G.restoreToken() || await G.trySilentSignIn()) await Store.pullFromCloud();
-  })
+// Initialise Google + resolve sign-in once (reuse a stored token, else silent re-auth). The
+// header shows a spinner until this resolves, so it never flashes "Sign in" → "Sign out".
+G.bootstrapAuth()
+  .then((signedIn) => { if (signedIn) Store.pullFromCloud(); })
   .catch((err) => console.warn('Google init failed:', err));

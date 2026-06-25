@@ -52,7 +52,11 @@ assert(Store.getState().days.length === 4, 'seeds 4 default days');
 assert(Store.getState().entries.length > 0, 'seeds baseline weight entries from the user log');
 assert(Store.getState().days[0].exercises[0].reps.length > 0, 'default exercises carry a rep scheme');
 assert(/Chest &amp; Triceps/.test(app.innerHTML), 'lists "Chest & Triceps"');
-assert(/Sign in to sync/.test(header.innerHTML), 'shows sign-in');
+// Auth starts in a loading state (spinner) and resolves to a sign-in button — no flash.
+assert(header.querySelector('.auth-spinner'), 'header shows a loading spinner while auth pending');
+assert(!/Sign in to sync/.test(header.innerHTML), 'no "Sign in" shown while still checking the token');
+G.markAuthResolved();
+assert(!header.querySelector('.auth-spinner') && /Sign in to sync/.test(header.innerHTML), 'after resolve: spinner gone, shows Sign in');
 assert(header.querySelector('[data-act="toggle-edit"]'), 'has an Edit-mode toggle');
 
 story('US2', 'In use mode, tapping a day card starts today\'s workout');

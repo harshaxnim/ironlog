@@ -69,9 +69,9 @@ function renderHeader() {
       ${sync}
       <button class="ghost edit-toggle${editMode ? ' on' : ''}" data-act="toggle-edit" title="Toggle edit mode">${editMode ? '✓ Done' : '✎ Edit'}</button>
       <button class="ghost icon-only" data-act="settings" title="Settings" aria-label="Settings">⚙</button>
-      <button class="primary" data-act="${signed ? 'signout' : 'signin'}">
-        ${signed ? 'Sign out' : 'Sign in to sync'}
-      </button>
+      ${G.authPending()
+        ? '<span class="auth-spinner" title="Checking sign-in…" aria-label="Checking sign-in"></span>'
+        : `<button class="primary" data-act="${signed ? 'signout' : 'signin'}">${signed ? 'Sign out' : 'Sign in to sync'}</button>`}
     </div>`;
   if (s.lastError) {
     headerEl.insertAdjacentHTML('afterend',
