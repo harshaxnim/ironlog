@@ -33,19 +33,14 @@ export function isSignedIn() {
 export function authPending() { return !authResolved; }
 export function markAuthResolved() { if (!authResolved) { authResolved = true; emit(); } }
 
-// One-shot startup: init the client, reuse a stored token (or try silent), then resolve.
-// Returns true if signed in. Always marks auth resolved (clears the spinner) when done.
+// One-shot startup: init the client and reuse a still-valid stored token. We deliberately do
+// NOT attempt any token request here — a background requestAccessToken() isn't user-initiated,
+// so the browser blocks its popup. If no valid token is stored, we just show "Sign in" and wait
+// for a click. Returns true if signed in. Always clears the spinner when done.
 export async function bootstrapAuth() {
   try {
     await init();
-    let signed = restoreToken();
-    if (!signed) {
-      signed = await Promise.race([
-        trySilentSignIn(),
-        new Promise((r) => { setTimeout(() => r(false), 4000); }), // don't spin forever
-      ]);
-    }
-    return signed;
+    return restoreToken();
   } catch {
     return false;
   } finally {
@@ -94,7 +89,7 @@ export function requestToken({ prompt = 'consent' } = {}) {
       tokenExpiry = Date.now() + (Number(resp.expires_in || 3600) - 60) * 1000;
       gapi.client.setToken({ access_token: accessToken });
       persistToken();
-      scheduleRefresh();
+      scheduleExpiry();
       emit();
       resolve(accessToken);
     };
@@ -102,23 +97,27 @@ export function requestToken({ prompt = 'consent' } = {}) {
   });
 }
 
+// User-initiated sign-in (always from a click, so its popup is allowed). Try the silent path
+// first — a returning user who already granted access usually gets a token with no consent
+// screen at all; fall back to the full consent prompt only if that fails (first time / revoked).
 export async function signIn() {
-  await requestToken({ prompt: 'consent' });
+  try { await requestToken({ prompt: '' }); }
+  catch { await requestToken({ prompt: 'consent' }); }
 }
 
-// The implicit (GIS token) flow only ever issues a ~1h access token — there's no refresh
-// token to lengthen it (that's a property of this flow, NOT of the OAuth app being in
-// "testing"). To keep a session alive we proactively re-request a token a couple of minutes
-// before it lapses. This succeeds silently while the Google session + prior consent are
-// intact; it can still fail under third-party-cookie blocking (Safari/incognito), in which
-// case the user simply lands on "Sign in" again — a durable fix there needs a backend.
-function scheduleRefresh() {
+// The implicit (GIS token) flow only ever issues a ~1h access token — there's no refresh token
+// to lengthen it (a property of this flow, NOT of the OAuth app's "testing" status; a login that
+// outlives a closed tab needs a backend). We do NOT try to auto-renew, because a background
+// token request triggers a browser-blocked popup. Instead we just flip the UI to "Sign in" the
+// moment the token lapses — no Google call, no popup — so the user can re-auth with one click.
+function scheduleExpiry() {
   if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
-  const lead = 2 * 60 * 1000; // renew 2 min early
-  const delay = tokenExpiry - Date.now() - lead;
+  const delay = tokenExpiry - Date.now();
   if (delay <= 0 || typeof setTimeout !== 'function') return;
   refreshTimer = setTimeout(() => {
-    requestToken({ prompt: '' }).catch(() => { /* silent renew failed — user can re-sign-in */ });
+    accessToken = null; tokenExpiry = 0;
+    try { gapi.client.setToken(null); } catch { /* ignore */ }
+    emit(); // re-render header → shows "Sign in"
   }, delay);
 }
 
@@ -147,18 +146,10 @@ export function restoreToken() {
     accessToken = t.access_token;
     tokenExpiry = t.expiry;
     gapi.client.setToken({ access_token: accessToken });
-    scheduleRefresh();
+    scheduleExpiry();
     emit();
     return true;
   } catch { return false; }
-}
-
-// Fallback when no valid stored token: try to get one WITHOUT a popup (existing Google
-// session + prior consent). Resolves true if signed in, false if a real sign-in is needed.
-export async function trySilentSignIn() {
-  if (!wasSignedIn() || !ready()) return false;
-  try { await requestToken({ prompt: '' }); return true; }
-  catch { return false; }
 }
 
 export function signOut() {
@@ -170,15 +161,20 @@ export function signOut() {
   emit();
 }
 
-// Re-auth wrapper: if a call fails with 401, get a fresh token silently and retry once.
+// If a call fails with 401 the access token has lapsed. We do NOT auto-popup a re-auth here
+// (it wouldn't be user-initiated → blocked). Instead reflect the expiry in the UI and surface a
+// clear message so the user re-signs in with a click, then retries the action.
 async function withAuth(fn) {
   try {
     return await fn();
   } catch (err) {
     const code = err?.status || err?.result?.error?.code;
     if (code === 401) {
-      await requestToken({ prompt: '' });
-      return await fn();
+      accessToken = null; tokenExpiry = 0;
+      try { localStorage.removeItem(LS_TOKEN); } catch { /* ignore */ }
+      try { gapi.client.setToken(null); } catch { /* ignore */ }
+      emit(); // header flips to "Sign in"
+      throw new Error('Your Google session expired — please sign in again.');
     }
     throw err;
   }
