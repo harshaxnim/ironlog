@@ -9,6 +9,7 @@ function uid() {
   return (crypto?.randomUUID?.() || ('id-' + Date.now() + '-' + Math.random().toString(36).slice(2)));
 }
 function nowISO() { return new Date().toISOString(); }
+function nowMs() { return Date.now(); }
 // LOCAL calendar date (not UTC). Must match the UI's date logic, or "done" detection —
 // which compares an entry's date to the session's date — silently breaks across timezones.
 export function todayISO(d = new Date()) {
@@ -19,10 +20,22 @@ const state = {
   settings: { unit: CONFIG.DEFAULT_UNIT },
   days: [],        // [{id, name, muscles[], exercises:[{id,name,muscle,db,finisher}]}]
   entries: [],     // [{id, exId, date, weight, unit, effort, note, createdAt}]
-  sessions: [],    // [{id, dayId, date, status, done[], note, startedAt, endedAt}]
+  sessions: [],    // [{id, dayId, date, status, done[], note, startedAt, endedAt, lastModified}]
+  // Sync bookkeeping. `pristine` = local holds only seeded defaults the user never touched
+  // (so remote must win on first sign-in, never the reverse). `structUpdatedAt` timestamps
+  // the days/settings blob for newer-wins. `tombstones` record deletions so a pull can't
+  // resurrect them: { entries:{id:deletedAtMs}, sessions:{id:deletedAtMs} }.
+  meta: { pristine: false, structUpdatedAt: 0, tombstones: { entries: {}, sessions: {} } },
   syncing: false,
   lastError: null,
 };
+
+// Any genuine user action makes local no longer pristine (its data may now be ahead of cloud).
+function touch() { state.meta.pristine = false; }
+// A structural (days/settings) edit also bumps the blob's timestamp for newer-wins merges.
+function touchStructure() { state.meta.pristine = false; state.meta.structUpdatedAt = nowMs(); }
+function tombstoneEntry(id) { state.meta.tombstones.entries[id] = nowMs(); }
+function tombstoneSession(id) { state.meta.tombstones.sessions[id] = nowMs(); }
 
 const subs = new Set();
 export function subscribe(fn) { subs.add(fn); return () => subs.delete(fn); }
@@ -59,6 +72,7 @@ function buildDefaults() {
         entries.push({
           id: uid(), exId, date: baseDate, weights, weight: topSet(weights),
           unit: state.settings.unit, effort: e.effort || 'medium', note: '', createdAt: nowISO(),
+          seed: true, // sample data — dropped (not merged) the first time we sync to a populated cloud
         });
       }
     }
@@ -72,7 +86,7 @@ function saveLocal() {
   try {
     localStorage.setItem(CONFIG.LS_KEY, JSON.stringify({
       settings: state.settings, days: state.days,
-      entries: state.entries, sessions: state.sessions,
+      entries: state.entries, sessions: state.sessions, meta: state.meta,
     }));
   } catch { /* quota — non-fatal */ }
 }
@@ -85,6 +99,18 @@ function loadLocal() {
     if (Array.isArray(data.days)) state.days = data.days;
     if (Array.isArray(data.entries)) state.entries = data.entries;
     if (Array.isArray(data.sessions)) state.sessions = data.sessions;
+    if (data.meta) {
+      // Migrate older caches that predate sync bookkeeping: existing real data is NOT
+      // pristine, so it must never be silently replaced by the cloud copy.
+      state.meta = {
+        pristine: !!data.meta.pristine,
+        structUpdatedAt: data.meta.structUpdatedAt || 0,
+        tombstones: {
+          entries: data.meta.tombstones?.entries || {},
+          sessions: data.meta.tombstones?.sessions || {},
+        },
+      };
+    }
     return true;
   } catch { return false; }
 }
@@ -96,42 +122,149 @@ export function init() {
     const seeded = buildDefaults();
     state.days = seeded.days;
     if (!state.entries.length) state.entries = seeded.entries;
+    // Freshly seeded data is pristine: a first sign-in must adopt the cloud copy (if any),
+    // never push these defaults over real cloud data.
+    state.meta = { pristine: true, structUpdatedAt: 0, tombstones: { entries: {}, sessions: {} } };
     saveLocal();
   }
   notify();
 }
 
 // --- cloud sync -----------------------------------------------------------
+// The Structure cell carries the editable tree PLUS sync bookkeeping (a blob timestamp and
+// the tombstone sets) so deletions and "who's newer" survive a round-trip through the sheet.
 function structureBlob() {
-  return { version: STRUCTURE_VERSION, settings: state.settings, days: state.days };
+  return {
+    version: STRUCTURE_VERSION,
+    settings: state.settings,
+    days: state.days,
+    updatedAt: state.meta.structUpdatedAt,
+    tombstones: state.meta.tombstones,
+  };
+}
+
+// --- merge primitives (pure — unit-tested against the three sync invariants) ---
+const entryTs = (e) => Date.parse(e?.createdAt || '') || 0;       // entries are immutable → createdAt
+const sessionTs = (s) => s?.lastModified || Date.parse(s?.endedAt || s?.startedAt || '') || 0;
+
+function mergeTombstones(a, b) {
+  const out = { entries: { ...(a?.entries || {}) }, sessions: { ...(a?.sessions || {}) } };
+  for (const kind of ['entries', 'sessions']) {
+    const src = b?.[kind] || {};
+    for (const id in src) out[kind][id] = Math.max(out[kind][id] || 0, src[id] || 0);
+  }
+  return out;
+}
+
+// Do two record lists hold the same records at the same versions? (id + timestamp identity).
+function sameSet(a, b, tsOf) {
+  if (a.length !== b.length) return false;
+  const key = (r) => r.id + '@' + tsOf(r);
+  const sa = new Set(a.map(key));
+  for (const r of b) if (!sa.has(key(r))) return false;
+  return true;
+}
+
+// Union two record lists by id (newer timestamp wins on collision), then drop anything
+// that's been tombstoned. ids are UUIDs, so a tombstoned id is gone for good.
+function mergeById(local, remote, tsOf, tomb) {
+  const byId = new Map();
+  for (const r of remote || []) if (r && r.id) byId.set(r.id, r);
+  for (const r of local || []) {
+    if (!r || !r.id) continue;
+    const ex = byId.get(r.id);
+    if (!ex || tsOf(r) >= tsOf(ex)) byId.set(r.id, r);
+  }
+  return [...byId.values()].filter((r) => !tomb[r.id]);
+}
+
+// Consolidate local state with a cloud snapshot. PURE: no I/O, no mutation of inputs.
+//   local  = { days, settings, entries, sessions, meta }
+//   remote = { structure:{days,settings,updatedAt,tombstones}|null, entries:[], sessions:[] }
+// Returns the merged { days, settings, entries, sessions, meta }.
+export function consolidate(local, remote) {
+  const lmeta = local.meta || { pristine: false, structUpdatedAt: 0, tombstones: {} };
+  const rStruct = remote.structure || null;
+  const rEntries = remote.entries || [];
+  const rSessions = remote.sessions || [];
+
+  const tombstones = mergeTombstones(lmeta.tombstones, rStruct?.tombstones);
+  const remoteHasStructure = !!(rStruct && Array.isArray(rStruct.days) && rStruct.days.length);
+
+  let days = local.days;
+  let settings = local.settings;
+  let structUpdatedAt = lmeta.structUpdatedAt || 0;
+  let pristine = lmeta.pristine;
+  let entries, sessions;
+
+  if (lmeta.pristine) {
+    // Local is just seeded defaults — adopt the cloud copy wholesale wherever it has data.
+    if (remoteHasStructure) {
+      days = rStruct.days;
+      if (rStruct.settings) settings = rStruct.settings;
+      structUpdatedAt = rStruct.updatedAt || 0;
+      pristine = false; // we now hold real cloud data
+    }
+    // If we just adopted the cloud's days, our seeded sample entries belong to the now-discarded
+    // seed days — drop them so they don't linger as orphans.
+    const localKept = remoteHasStructure ? local.entries.filter((e) => !e.seed) : local.entries;
+    entries = rEntries.length ? rEntries.filter((e) => !tombstones.entries[e.id]) : localKept;
+    sessions = rSessions.length ? rSessions.filter((s) => !tombstones.sessions[s.id]) : local.sessions;
+  } else {
+    // Both sides may hold real edits — consolidate per record, newer wins, tombstones exclude.
+    // Drop never-touched seed samples once the cloud has real entries (don't pollute it).
+    const localEntries = rEntries.length ? local.entries.filter((e) => !e.seed) : local.entries;
+    entries = mergeById(localEntries, rEntries, entryTs, tombstones.entries);
+    sessions = mergeById(local.sessions, rSessions, sessionTs, tombstones.sessions);
+    // Days/settings are a single blob: newer timestamp wins (ties favour the local copy).
+    const rUpd = rStruct?.updatedAt || 0;
+    if (remoteHasStructure && rUpd > structUpdatedAt) {
+      days = rStruct.days;
+      if (rStruct.settings) settings = rStruct.settings;
+      structUpdatedAt = rUpd;
+    }
+  }
+
+  // What actually diverged from the cloud snapshot — so a pull that changes nothing doesn't
+  // trigger a (non-atomic) clear-then-rewrite of the cloud on every app open.
+  const remoteTomb = rStruct?.tombstones || { entries: {}, sessions: {} };
+  const dirty = {
+    entries: !sameSet(entries, rEntries, entryTs),
+    sessions: !sameSet(sessions, rSessions, sessionTs),
+    structure: !remoteHasStructure
+      || structUpdatedAt !== (rStruct?.updatedAt || 0)
+      || JSON.stringify(tombstones) !== JSON.stringify(remoteTomb),
+  };
+
+  return { days, settings, entries, sessions, meta: { pristine, structUpdatedAt, tombstones }, dirty };
 }
 
 export async function pullFromCloud() {
   state.syncing = true; state.lastError = null; notify();
   try {
-    const remote = await G.readStructure();
-    if (remote && Array.isArray(remote.days) && remote.days.length) {
-      state.days = remote.days;
-      if (remote.settings) state.settings = remote.settings;
-    } else {
-      // Cloud is empty — push whatever we have locally (seeded defaults) as the baseline.
-      await G.writeStructure(structureBlob());
-    }
-
-    const remoteEntries = await G.readEntries();
-    if (remoteEntries.length) {
-      state.entries = remoteEntries;
-    } else if (state.entries.length) {
-      await G.rewriteEntries(state.entries); // push offline-logged entries up
-    }
-
-    const remoteSessions = await G.readSessions();
-    if (remoteSessions.length) {
-      state.sessions = remoteSessions;
-    } else if (state.sessions.length) {
-      await G.rewriteSessions(state.sessions);
-    }
+    // Read the full cloud snapshot, then consolidate locally — never a blind overwrite.
+    const [structure, rEntries, rSessions] = await Promise.all([
+      G.readStructure(), G.readEntries(), G.readSessions(),
+    ]);
+    const merged = consolidate(
+      { days: state.days, settings: state.settings, entries: state.entries, sessions: state.sessions, meta: state.meta },
+      { structure, entries: rEntries, sessions: rSessions },
+    );
+    state.days = merged.days;
+    state.settings = merged.settings;
+    state.entries = merged.entries;
+    state.sessions = merged.sessions;
+    state.meta = merged.meta;
     saveLocal();
+
+    // Push back ONLY what diverged so the cloud converges on the merged truth (incl.
+    // tombstones). Skipping unchanged collections avoids a needless clear-then-rewrite —
+    // and its data-loss window — on every app open.
+    if (G.isSignedIn()) {
+      if (merged.dirty.structure) await G.writeStructure(structureBlob());
+      if (merged.dirty.entries) await G.rewriteEntries(state.entries);
+      if (merged.dirty.sessions) await G.rewriteSessions(state.sessions);
+    }
   } catch (err) {
     state.lastError = humanError(err);
   } finally {
@@ -145,6 +278,9 @@ export async function resetToDefaults() {
   state.days = seeded.days;
   state.entries = seeded.entries;
   state.sessions = [];
+  // An explicit reset is a deliberate user action that must win over the cloud: mark it
+  // non-pristine and freshly timestamped so the pushed defaults overwrite remote.
+  state.meta = { pristine: false, structUpdatedAt: nowMs(), tombstones: { entries: {}, sessions: {} } };
   saveLocal(); notify();
   if (G.isSignedIn()) {
     state.syncing = true; notify();
@@ -157,7 +293,7 @@ export async function resetToDefaults() {
   }
 }
 
-// Manual "pull from Google Sheet" — overwrites local with the cloud copy.
+// Manual "Sync now" — consolidates local + cloud by timestamp/tombstone (never a blind overwrite).
 export async function syncFromCloud() {
   if (!G.isSignedIn()) { state.lastError = 'Sign in first to sync from Google Sheets.'; notify(); return; }
   await pullFromCloud();
@@ -173,6 +309,7 @@ async function pushSessions() {
 }
 
 async function pushStructure() {
+  touchStructure(); // a structural edit makes local authoritative + bumps the blob timestamp
   saveLocal();
   if (!G.isSignedIn()) return;
   state.syncing = true; notify();
@@ -210,9 +347,10 @@ export function deleteDay(dayId) {
   const d = state.days.find((x) => x.id === dayId); if (!d) return;
   const exIds = new Set(d.exercises.map((e) => e.id));
   state.days = state.days.filter((x) => x.id !== dayId);
+  for (const e of state.entries) if (exIds.has(e.exId)) tombstoneEntry(e.id);
   state.entries = state.entries.filter((e) => !exIds.has(e.exId));
-  pushStructure();
-  if (G.isSignedIn()) G.rewriteEntries(state.entries).catch(() => {});
+  pushStructure(); // also persists the tombstones (they live in the structure blob)
+  if (G.isSignedIn()) G.rewriteEntries(state.entries).catch((err) => { state.lastError = humanError(err); notify(); });
   notify();
 }
 
@@ -232,9 +370,10 @@ export function updateExercise(dayId, exId, patch) {
 export function deleteExercise(dayId, exId) {
   const d = state.days.find((x) => x.id === dayId); if (!d) return;
   d.exercises = d.exercises.filter((x) => x.id !== exId);
+  for (const e of state.entries) if (e.exId === exId) tombstoneEntry(e.id);
   state.entries = state.entries.filter((e) => e.exId !== exId);
-  pushStructure();
-  if (G.isSignedIn()) G.rewriteEntries(state.entries).catch(() => {});
+  pushStructure(); // also persists the tombstones (they live in the structure blob)
+  if (G.isSignedIn()) G.rewriteEntries(state.entries).catch((err) => { state.lastError = humanError(err); notify(); });
   notify();
 }
 
@@ -260,6 +399,7 @@ export async function addEntry(exId, { weights, weight, effort, date, note = '' 
     createdAt: nowISO(),
   };
   state.entries.push(entry);
+  touch(); // a logged entry is real user data — local is no longer pristine
   saveLocal(); notify();
   if (G.isSignedIn()) {
     try { await G.appendEntry(entry); }
@@ -270,10 +410,16 @@ export async function addEntry(exId, { weights, weight, effort, date, note = '' 
 
 export async function deleteEntry(entryId) {
   state.entries = state.entries.filter((e) => e.id !== entryId);
+  tombstoneEntry(entryId); // record the delete so a later pull can't resurrect it
+  touch();
   saveLocal(); notify();
   if (G.isSignedIn()) {
-    try { await G.rewriteEntries(state.entries); }
-    catch (err) { state.lastError = humanError(err); notify(); }
+    state.syncing = true; notify();
+    try {
+      await G.writeStructure(structureBlob()); // persist the tombstone (lives in the structure blob)
+      await G.rewriteEntries(state.entries);
+    } catch (err) { state.lastError = humanError(err); }
+    finally { state.syncing = false; notify(); }
   }
 }
 
@@ -298,8 +444,9 @@ export function startSession(dayId, date) {
   let s = state.sessions.find((x) => x.dayId === dayId && x.date === date && x.status !== 'ended');
   if (!s) {
     s = { id: uid(), dayId, date, status: 'active', done: [], note: '',
-          startedAt: nowISO(), endedAt: '', snapshot: snapshotDay(day) };
+          startedAt: nowISO(), endedAt: '', snapshot: snapshotDay(day), lastModified: nowMs() };
     state.sessions.push(s);
+    touch();
     saveLocal(); notify(); // kept local until the day is ended
   }
   return s;
@@ -328,7 +475,7 @@ export function sessionDoneIds(session) {
 
 export function setSessionNote(sessionId, note) {
   const s = getSession(sessionId); if (!s) return;
-  s.note = note; saveLocal(); notify();
+  s.note = note; s.lastModified = nowMs(); touch(); saveLocal(); notify();
 }
 
 // "Machine taken" — swap an exercise to a different movement for THIS workout only.
@@ -340,26 +487,33 @@ export function swapSessionExercise(sessionId, exId, { name, db }) {
   if (!e) return;
   if (name != null) e.name = name;
   if (db !== undefined) e.db = db;
-  saveLocal(); notify();
+  s.lastModified = nowMs(); touch(); saveLocal(); notify();
 }
 
 // End the day → freeze the derived done-list, mark ended, and PUSH to the Google Sheet.
 export async function endSession(sessionId) {
   const s = getSession(sessionId); if (!s) return;
   s.done = sessionDoneIds(s); // snapshot what was logged while the day was active
-  s.status = 'ended'; s.endedAt = nowISO();
+  s.status = 'ended'; s.endedAt = nowISO(); s.lastModified = nowMs();
+  touch();
   await pushSessions();
 }
 
 export function reopenSession(sessionId) {
   const s = getSession(sessionId); if (!s) return;
-  s.status = 'active'; s.endedAt = '';
-  saveLocal(); notify();
+  s.status = 'active'; s.endedAt = ''; s.lastModified = nowMs();
+  touch(); saveLocal(); notify();
 }
 
 export async function deleteSession(sessionId) {
   state.sessions = state.sessions.filter((s) => s.id !== sessionId);
+  tombstoneSession(sessionId); // record the delete so a later pull can't resurrect it
+  touch();
   await pushSessions();
+  if (G.isSignedIn()) {
+    try { await G.writeStructure(structureBlob()); } // persist the tombstone
+    catch (err) { state.lastError = humanError(err); notify(); }
+  }
 }
 
 export function sessionsForDate(date) {

@@ -17,7 +17,17 @@ export function renderWeightChart(canvas, entries, unit) {
   if (typeof Chart === 'undefined') return; // CDN not loaded (offline) — caller shows fallback
   if (current) { current.destroy(); current = null; }
 
-  const days = entries.map((e) => ({ e, ws: setWeights(e) })).filter((d) => d.ws.length);
+  // One point per calendar date: if a date was logged more than once, keep only the latest
+  // entry (by createdAt). `entries` arrives oldest→newest, so a later index always wins.
+  const latestByDate = new Map();
+  for (const e of entries) {
+    const prev = latestByDate.get(e.date);
+    if (!prev || (e.createdAt || '') >= (prev.createdAt || '')) latestByDate.set(e.date, e);
+  }
+  const days = [...latestByDate.values()]
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map((e) => ({ e, ws: setWeights(e) }))
+    .filter((d) => d.ws.length);
   if (!days.length) return;
   const labels = days.map((d) => d.e.date);
 

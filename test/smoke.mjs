@@ -209,5 +209,79 @@ localStorage.setItem('ironlog.gtoken', JSON.stringify({ access_token: 'tok', exp
 G.signOut();
 assert(G.restoreToken() === false && !G.isSignedIn(), 'expired/cleared token does not restore');
 
+// ---------------------------------------------------------------------------
+// Sync correctness — the three invariants the consolidate() merge must uphold.
+const meta = (over = {}) => ({ pristine: false, structUpdatedAt: 0, tombstones: { entries: {}, sessions: {} }, ...over });
+const ent = (id, over = {}) => ({ id, exId: 'x', date: '2026-06-01', weights: [10], weight: 10, createdAt: '2026-06-01T00:00:00.000Z', ...over });
+
+story('SYNC1', 'A locally-added (unsynced) entry survives a pull — never lost');
+{
+  const local = { days: [{ id: 'd', exercises: [] }], settings: {}, entries: [ent('local-only')], sessions: [], meta: meta() };
+  const remote = { structure: { days: [{ id: 'd', exercises: [] }], updatedAt: 0, tombstones: {} }, entries: [ent('remote-only')], sessions: [] };
+  const m = Store.consolidate(local, remote);
+  assert(m.entries.some((e) => e.id === 'local-only'), 'local-only entry kept after merge');
+  assert(m.entries.some((e) => e.id === 'remote-only'), 'remote-only entry pulled in');
+}
+
+story('SYNC2', 'Pristine seeded local NEVER overwrites populated remote');
+{
+  const local = { days: [{ id: 'seed1', exercises: [] }, { id: 'seed2', exercises: [] }], settings: { unit: 'kg' },
+    entries: [ent('seed-e', { seed: true })], sessions: [], meta: meta({ pristine: true, structUpdatedAt: 0 }) };
+  const remote = { structure: { days: [{ id: 'real', exercises: [] }], settings: { unit: 'lbs' }, updatedAt: 0, tombstones: {} },
+    entries: [ent('real-e')], sessions: [] };
+  const m = Store.consolidate(local, remote);
+  assert(m.days.length === 1 && m.days[0].id === 'real', 'remote days win over pristine seeded days');
+  assert(m.entries.length === 1 && m.entries[0].id === 'real-e', 'seeded sample entries dropped; remote entries adopted');
+  assert(m.meta.pristine === false, 'after adopting real cloud data, local is no longer pristine');
+}
+
+story('SYNC3', 'A deleted entry stays deleted after a pull (tombstone wins over stale remote)');
+{
+  const local = { days: [{ id: 'd', exercises: [] }], settings: {}, entries: [], sessions: [],
+    meta: meta({ tombstones: { entries: { 'gone': Date.now() }, sessions: {} } }) };
+  const remote = { structure: { days: [{ id: 'd', exercises: [] }], updatedAt: 0, tombstones: {} },
+    entries: [ent('gone')], sessions: [] }; // cloud hasn't caught up — still has the deleted row
+  const m = Store.consolidate(local, remote);
+  assert(!m.entries.some((e) => e.id === 'gone'), 'tombstoned entry is NOT resurrected from remote');
+}
+
+story('SYNC4', 'Tombstones from both sides union (a remote-recorded delete is honoured locally)');
+{
+  const local = { days: [{ id: 'd', exercises: [] }], settings: {}, entries: [ent('rgone')], sessions: [], meta: meta() };
+  const remote = { structure: { days: [{ id: 'd', exercises: [] }], updatedAt: 0, tombstones: { entries: { 'rgone': Date.now() }, sessions: {} } },
+    entries: [], sessions: [] };
+  const m = Store.consolidate(local, remote);
+  assert(!m.entries.some((e) => e.id === 'rgone'), 'entry deleted on another device is removed here too');
+  assert(!!m.meta.tombstones.entries['rgone'], 'the remote tombstone is retained locally');
+}
+
+story('SYNC5', 'Deleting an entry records a tombstone (so a later pull keeps it gone)');
+{
+  await Store.resetToDefaults();
+  const ex = Store.getState().days[0].exercises[0].id;
+  const e = await Store.addEntry(ex, { weights: [42], effort: 'low', date: Store.todayISO() });
+  assert(Store.getState().entries.some((x) => x.id === e.id), 'entry added');
+  await Store.deleteEntry(e.id);
+  assert(!Store.getState().entries.some((x) => x.id === e.id), 'entry removed from state');
+  assert(!!Store.getState().meta.tombstones.entries[e.id], 'a tombstone was recorded for the deleted entry');
+  // End-to-end: a pull that still sees the deleted entry in the cloud must NOT resurrect it.
+  const m = Store.consolidate(
+    { ...Store.getState(), meta: Store.getState().meta },
+    { structure: { days: Store.getState().days, updatedAt: 0, tombstones: {} }, entries: [{ id: e.id, exId: ex, date: e.date, weights: [42], createdAt: e.createdAt }], sessions: [] },
+  );
+  assert(!m.entries.some((x) => x.id === e.id), 'deleted entry stays gone through a full delete→pull cycle');
+}
+
+story('SYNC6', 'An unchanged pull reports nothing dirty (no needless cloud rewrite)');
+{
+  const days = [{ id: 'd', exercises: [] }];
+  const local = { days, settings: { unit: 'lbs' }, entries: [ent('a')], sessions: [],
+    meta: meta({ structUpdatedAt: 5 }) };
+  const remote = { structure: { days, settings: { unit: 'lbs' }, updatedAt: 5, tombstones: { entries: {}, sessions: {} } },
+    entries: [ent('a')], sessions: [] };
+  const m = Store.consolidate(local, remote);
+  assert(!m.dirty.entries && !m.dirty.sessions && !m.dirty.structure, 'nothing flagged dirty when local == remote');
+}
+
 console.log(`\n${storyCount} user stories — ${failures ? failures + ' CHECK(S) FAILED ❌' : 'all checks passed ✅'}`);
 process.exit(failures ? 1 : 0);

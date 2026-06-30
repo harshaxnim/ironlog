@@ -5,7 +5,7 @@
 import { CONFIG } from './config.js';
 
 const ENTRY_HEADER = ['id', 'exId', 'date', 'weight', 'unit', 'effort', 'note', 'createdAt', 'weights'];
-const SESSION_HEADER = ['id', 'dayId', 'date', 'status', 'done', 'note', 'startedAt', 'endedAt', 'snapshot'];
+const SESSION_HEADER = ['id', 'dayId', 'date', 'status', 'done', 'note', 'startedAt', 'endedAt', 'snapshot', 'lastModified'];
 
 function safeJSON(str, fallback) {
   try { return JSON.parse(str); } catch { return fallback; }
@@ -14,6 +14,7 @@ function safeJSON(str, fallback) {
 let tokenClient = null;
 let accessToken = null;
 let tokenExpiry = 0;
+let refreshTimer = null;
 let gapiReady = false;
 let gisReady = false;
 let spreadsheetId = null;
@@ -93,6 +94,7 @@ export function requestToken({ prompt = 'consent' } = {}) {
       tokenExpiry = Date.now() + (Number(resp.expires_in || 3600) - 60) * 1000;
       gapi.client.setToken({ access_token: accessToken });
       persistToken();
+      scheduleRefresh();
       emit();
       resolve(accessToken);
     };
@@ -102,6 +104,22 @@ export function requestToken({ prompt = 'consent' } = {}) {
 
 export async function signIn() {
   await requestToken({ prompt: 'consent' });
+}
+
+// The implicit (GIS token) flow only ever issues a ~1h access token — there's no refresh
+// token to lengthen it (that's a property of this flow, NOT of the OAuth app being in
+// "testing"). To keep a session alive we proactively re-request a token a couple of minutes
+// before it lapses. This succeeds silently while the Google session + prior consent are
+// intact; it can still fail under third-party-cookie blocking (Safari/incognito), in which
+// case the user simply lands on "Sign in" again — a durable fix there needs a backend.
+function scheduleRefresh() {
+  if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
+  const lead = 2 * 60 * 1000; // renew 2 min early
+  const delay = tokenExpiry - Date.now() - lead;
+  if (delay <= 0 || typeof setTimeout !== 'function') return;
+  refreshTimer = setTimeout(() => {
+    requestToken({ prompt: '' }).catch(() => { /* silent renew failed — user can re-sign-in */ });
+  }, delay);
 }
 
 // We persist the short-lived access token (and its expiry) locally so a page refresh stays
@@ -129,6 +147,7 @@ export function restoreToken() {
     accessToken = t.access_token;
     tokenExpiry = t.expiry;
     gapi.client.setToken({ access_token: accessToken });
+    scheduleRefresh();
     emit();
     return true;
   } catch { return false; }
@@ -143,6 +162,7 @@ export async function trySilentSignIn() {
 }
 
 export function signOut() {
+  if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
   if (accessToken) google.accounts.oauth2.revoke(accessToken, () => {});
   accessToken = null; tokenExpiry = 0; spreadsheetId = null;
   try { localStorage.removeItem(LS_TOKEN); } catch { /* ignore */ }
@@ -165,9 +185,14 @@ async function withAuth(fn) {
 }
 
 // --- spreadsheet bootstrap ------------------------------------------------
+let ensureInFlight = null;
 export async function ensureSpreadsheet() {
   if (spreadsheetId) return spreadsheetId;
-  return withAuth(async () => {
+  // Memoise the in-flight lookup/creation: concurrent callers (e.g. the parallel reads in
+  // pullFromCloud, or a delete firing structure+entries writes at once) must NOT each race to
+  // create their own duplicate spreadsheet.
+  if (ensureInFlight) return ensureInFlight;
+  ensureInFlight = withAuth(async () => {
     // drive.file scope: list only returns files THIS app created.
     const q = `name='${CONFIG.SPREADSHEET_NAME.replace(/'/g, "\\'")}'` +
       ` and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false`;
@@ -197,6 +222,9 @@ export async function ensureSpreadsheet() {
     await writeRange(CONFIG.SESSIONS_SHEET, [SESSION_HEADER]);
     return spreadsheetId;
   });
+  // Clear the latch on failure so a later call can retry (and free it on success too).
+  try { return await ensureInFlight; }
+  finally { ensureInFlight = null; }
 }
 
 function writeRange(sheet, values) {
@@ -299,7 +327,7 @@ export async function readSessions() {
   await ensureSpreadsheet();
   return withAuth(async () => {
     const res = await gapi.client.sheets.spreadsheets.values.get({
-      spreadsheetId, range: `${CONFIG.SESSIONS_SHEET}!A2:I`,
+      spreadsheetId, range: `${CONFIG.SESSIONS_SHEET}!A2:J`,
     });
     const rows = res.result.values || [];
     return rows.filter((r) => r[0]).map((r) => ({
@@ -307,6 +335,8 @@ export async function readSessions() {
       done: safeJSON(r[4], []), note: r[5] || '',
       startedAt: r[6] || '', endedAt: r[7] || '',
       snapshot: safeJSON(r[8], null),
+      // Older sheets predate this column → fall back to a parsable timestamp (or 0).
+      lastModified: r[9] != null && r[9] !== '' ? Number(r[9]) : 0,
     }));
   });
 }
@@ -316,11 +346,11 @@ export async function rewriteSessions(sessions) {
   const values = [SESSION_HEADER, ...sessions.map((s) => [
     s.id, s.dayId, s.date, s.status || 'ended',
     JSON.stringify(s.done || []), s.note || '', s.startedAt || '', s.endedAt || '',
-    JSON.stringify(s.snapshot || null),
+    JSON.stringify(s.snapshot || null), s.lastModified || 0,
   ])];
   return withAuth(async () => {
     await gapi.client.sheets.spreadsheets.values.clear({
-      spreadsheetId, range: `${CONFIG.SESSIONS_SHEET}!A:I`,
+      spreadsheetId, range: `${CONFIG.SESSIONS_SHEET}!A:J`,
     });
     await writeRange(CONFIG.SESSIONS_SHEET, values);
   });
