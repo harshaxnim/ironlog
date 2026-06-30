@@ -118,7 +118,10 @@ function renderHome() {
 
       <div class="row-between" style="margin-top:1.8rem">
         <h2>History</h2>
-        ${signed ? '<button class="ghost" data-act="sync-pull" title="Merge with the Google Sheet (nothing is overwritten)">⟲ Sync now</button>' : ''}
+        ${signed ? `<div class="sync-btns">
+          <button class="ghost" data-act="sync-down" title="Pull the Google Sheet into this device (merges, nothing is overwritten)">⬇ Sync down</button>
+          <button class="ghost" data-act="sync-up" title="Upload this device's data to the Google Sheet (merges, nothing is overwritten)">⬆ Sync up</button>
+        </div>` : ''}
       </div>
       <div class="cal-history">
         <div class="cal-col">
@@ -725,7 +728,10 @@ function settingsModal() {
     </label>
     <p class="muted small">New entries are tagged with the current unit; existing entries keep the unit they were logged in.</p>
     ${url ? `<p class="small"><a href="${url}" target="_blank" rel="noopener">Open Google Sheet ↗</a></p>` : '<p class="muted small">Sign in to sync to Google Sheets.</p>'}
-    ${G.isSignedIn() ? '<button class="ghost" data-act="sync-pull" style="width:100%">⟲ Sync with Google Sheet</button>' : ''}
+    ${G.isSignedIn() ? `<div class="sync-btns" style="width:100%">
+      <button class="ghost" data-act="sync-down" style="flex:1">⬇ Sync down</button>
+      <button class="ghost" data-act="sync-up" style="flex:1">⬆ Sync up</button>
+    </div>` : ''}
     <hr style="border:none;border-top:1px solid var(--line);margin:1rem 0" />
     <button class="danger ghost" data-act="reset-defaults" style="width:100%">↺ Reset to default workouts</button>
     <p class="muted small">Replaces your days &amp; logs with the built-in defaults (seeded with starting weights). Can't be undone.</p>
@@ -756,10 +762,9 @@ document.addEventListener('click', async (e) => {
     case 'cal-date': return dateModal(t.dataset.date);
     case 'cal-prev': calCursor = new Date(calCursor.getFullYear(), calCursor.getMonth() - 1, 1); return render();
     case 'cal-next': calCursor = new Date(calCursor.getFullYear(), calCursor.getMonth() + 1, 1); return render();
-    case 'sync-pull':
-      // Consolidates local + cloud by timestamp (and honours deletions) — no blind overwrite.
-      await Store.syncFromCloud();
-      return;
+    // Both directions consolidate by timestamp/tombstone — neither blind-overwrites.
+    case 'sync-down': await Store.syncDown(); return; // cloud → this device
+    case 'sync-up': await Store.syncUp(); return;     // this device → cloud
     case 'reset-defaults':
       if (confirm('Reset to the default workouts? This replaces all your days and logs and cannot be undone.')) {
         closeModal(); await Store.resetToDefaults(); go('#/');

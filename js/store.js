@@ -241,7 +241,12 @@ export function consolidate(local, remote) {
   return { days, settings, entries, sessions, meta: { pristine, structUpdatedAt, tombstones }, dirty };
 }
 
-export async function pullFromCloud() {
+// Bidirectional consolidation core. ALWAYS reads the cloud and merges (so neither direction
+// can blind-overwrite the other side's data); `push` decides whether the merged result is also
+// written back up to the cloud.
+//   - "Sync down" (push:false) refreshes local from the cloud without touching the cloud.
+//   - "Sync up"   (push:true)  consolidates and uploads local changes to the cloud.
+async function syncCore({ push }) {
   state.syncing = true; state.lastError = null; notify();
   try {
     // Read the full cloud snapshot, then consolidate locally — never a blind overwrite.
@@ -264,8 +269,8 @@ export async function pullFromCloud() {
 
     // Push back ONLY what diverged so the cloud converges on the merged truth (incl.
     // tombstones). Skipping unchanged collections avoids a needless clear-then-rewrite —
-    // and its data-loss window — on every app open.
-    if (G.isSignedIn()) {
+    // and its data-loss window.
+    if (push && G.isSignedIn()) {
       if (merged.dirty.structure) await G.writeStructure(structureBlob());
       if (merged.dirty.entries || healed) await G.rewriteEntries(state.entries);
       if (merged.dirty.sessions || healed) await G.rewriteSessions(state.sessions);
@@ -275,6 +280,22 @@ export async function pullFromCloud() {
   } finally {
     state.syncing = false; notify();
   }
+}
+
+// On sign-in/bootstrap we want a full two-way reconciliation (pull + push the merge).
+export async function pullFromCloud() { return syncCore({ push: true }); }
+
+// Manual "Sync down": pull the cloud into local and consolidate — does NOT write to the cloud.
+export async function syncDown() {
+  if (!G.isSignedIn()) { state.lastError = 'Sign in first to sync.'; notify(); return; }
+  return syncCore({ push: false });
+}
+
+// Manual "Sync up": consolidate, then upload local changes to the cloud (reads first so a stale
+// local copy can't wipe cloud-only data).
+export async function syncUp() {
+  if (!G.isSignedIn()) { state.lastError = 'Sign in first to sync.'; notify(); return; }
+  return syncCore({ push: true });
 }
 
 // Wipe local data and re-seed the default days + baseline weight entries.
@@ -298,11 +319,6 @@ export async function resetToDefaults() {
   }
 }
 
-// Manual "Sync now" — consolidates local + cloud by timestamp/tombstone (never a blind overwrite).
-export async function syncFromCloud() {
-  if (!G.isSignedIn()) { state.lastError = 'Sign in first to sync from Google Sheets.'; notify(); return; }
-  await pullFromCloud();
-}
 
 async function pushSessions() {
   saveLocal();

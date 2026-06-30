@@ -63,6 +63,7 @@ a { color: var(--accent-2); }
 .view { max-width: 880px; margin: 0 auto; padding: 1.1rem 1rem 4rem; }
 .row-between { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
 .stack-btns { display: flex; gap: .5rem; flex-wrap: wrap; }
+.sync-btns { display: flex; gap: .5rem; flex-wrap: wrap; }
 
 /* buttons — base targets are ≥44px tall for thumb use (see DESIGN.md) */
 button { font: inherit; cursor: pointer; border-radius: 10px; border: 1px solid transparent; padding: .55rem .9rem; min-height: 44px; transition: .15s; -webkit-tap-highlight-color: transparent; }
