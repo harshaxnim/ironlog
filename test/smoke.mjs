@@ -283,5 +283,31 @@ story('SYNC6', 'An unchanged pull reports nothing dirty (no needless cloud rewri
   assert(!m.dirty.entries && !m.dirty.sessions && !m.dirty.structure, 'nothing flagged dirty when local == remote');
 }
 
+story('SYNC7', 'Orphaned sets (no session) are healed into a reconstructed workout');
+{
+  await Store.resetToDefaults();
+  const day = Store.getState().days[0];
+  const ex = day.exercises[0].id;
+  await Store.addEntry(ex, { weights: [60], effort: 'medium', date: Store.todayISO() }); // no sessionId
+  const orphan = Store.getState().entries.find((e) => e.exId === ex && !e.seed && !e.sessionId);
+  assert(!!orphan, 'a set with no session link exists (orphan)');
+  const before = Store.getState().sessions.length;
+  Store.init(); // re-hydrates from cache and runs orphan healing
+  const after = Store.getState();
+  assert(after.sessions.length > before, 'a workout was reconstructed for the orphaned set');
+  const healed = after.entries.find((e) => e.id === orphan.id);
+  assert(!!healed.sessionId, 'the orphaned set is now bound to a session');
+  const sess = after.sessions.find((s) => s.id === healed.sessionId);
+  assert(sess && sess.status === 'ended' && sess.done.includes(ex), 'reconstructed workout is ended and marks the set done');
+}
+
+story('SYNC8', 'A logged set records its sessionId and stays out of done-by-date guesswork');
+{
+  await Store.resetToDefaults();
+  const ex = Store.getState().days[0].exercises[0].id;
+  const e = await Store.addEntry(ex, { weights: [70], date: Store.todayISO(), sessionId: 'sess-xyz' });
+  assert(e.sessionId === 'sess-xyz', 'addEntry persists the sessionId binding');
+}
+
 console.log(`\n${storyCount} user stories — ${failures ? failures + ' CHECK(S) FAILED ❌' : 'all checks passed ✅'}`);
 process.exit(failures ? 1 : 0);

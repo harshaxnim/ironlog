@@ -127,6 +127,8 @@ export function init() {
     state.meta = { pristine: true, structUpdatedAt: 0, tombstones: { entries: {}, sessions: {} } };
     saveLocal();
   }
+  // Recover any sets stranded without a workout (legacy data) so they show in History.
+  if (healOrphanEntries()) saveLocal();
   notify();
 }
 
@@ -255,6 +257,9 @@ export async function pullFromCloud() {
     state.entries = merged.entries;
     state.sessions = merged.sessions;
     state.meta = merged.meta;
+    // Recover sets stranded without a workout once the cloud copy is merged in. This may add
+    // sessions and stamp sessionIds onto entries, so both collections then need pushing.
+    const healed = healOrphanEntries();
     saveLocal();
 
     // Push back ONLY what diverged so the cloud converges on the merged truth (incl.
@@ -262,8 +267,8 @@ export async function pullFromCloud() {
     // and its data-loss window — on every app open.
     if (G.isSignedIn()) {
       if (merged.dirty.structure) await G.writeStructure(structureBlob());
-      if (merged.dirty.entries) await G.rewriteEntries(state.entries);
-      if (merged.dirty.sessions) await G.rewriteSessions(state.sessions);
+      if (merged.dirty.entries || healed) await G.rewriteEntries(state.entries);
+      if (merged.dirty.sessions || healed) await G.rewriteSessions(state.sessions);
     }
   } catch (err) {
     state.lastError = humanError(err);
@@ -383,7 +388,7 @@ export function setUnit(unit) {
 }
 
 // --- entries --------------------------------------------------------------
-export async function addEntry(exId, { weights, weight, effort, date, note = '' }) {
+export async function addEntry(exId, { weights, weight, effort, date, note = '', sessionId = '' }) {
   // Accept a per-set vector; fall back to a single weight for back-compat.
   let arr = Array.isArray(weights)
     ? weights.map((w) => (w === '' || w == null ? null : Number(w)))
@@ -397,6 +402,9 @@ export async function addEntry(exId, { weights, weight, effort, date, note = '' 
     weight: topSet(arr), // top set drives the progression line + done/back-compat
     unit: state.settings.unit, effort: effort || '', note,
     createdAt: nowISO(),
+    // Every logged set is bound to its workout session, so it can never be orphaned by a
+    // date mismatch or a lost session record.
+    sessionId: sessionId || '',
   };
   state.entries.push(entry);
   touch(); // a logged entry is real user data — local is no longer pristine
@@ -436,6 +444,58 @@ function snapshotDay(day) {
   };
 }
 
+// Recover sets that have no workout to live under (logged before sets were bound to a session,
+// or stranded by an old sync bug). For each group of such sets we (re)create an ended session
+// and bind the sets to it, so every set is associated with a session and shows in History.
+// Idempotent: once a covering session exists, nothing is reconstructed for it again.
+function healOrphanEntries() {
+  const sessionsById = new Map(state.sessions.map((s) => [s.id, s]));
+  const covered = new Set(state.sessions.map((s) => s.dayId + '|' + s.date));
+  const tombSessions = state.meta.tombstones.sessions || {};
+
+  const groups = new Map(); // key -> { id, day, date, exIds:Set, entries:[], min, max }
+  const add = (key, id, day, e) => {
+    let g = groups.get(key);
+    if (!g) { g = { id, day, date: e.date, exIds: new Set(), entries: [], min: e.createdAt || '', max: e.createdAt || '' }; groups.set(key, g); }
+    g.exIds.add(e.exId); g.entries.push(e);
+    if ((e.date || '') < (g.date || '')) g.date = e.date; // session date = earliest set's date
+    if ((e.createdAt || '') < g.min) g.min = e.createdAt || '';
+    if ((e.createdAt || '') > g.max) g.max = e.createdAt || '';
+  };
+
+  for (const e of state.entries) {
+    if (e.seed) continue;                       // sample data is not a real workout
+    const found = findExercise(e.exId);
+    if (!found) continue;                        // its exercise no longer exists — can't anchor it
+    const day = found.day;
+    if (e.sessionId) {
+      if (sessionsById.has(e.sessionId)) continue;   // session is present — not orphaned
+      if (tombSessions[e.sessionId]) continue;        // session was deliberately deleted
+      add('sid:' + e.sessionId, e.sessionId, day, e); // rebuild the lost session under its own id
+    } else {
+      const dayKey = day.id + '|' + e.date;
+      if (covered.has(dayKey)) continue;              // a session already covers this day+date
+      const reconId = 'recon-' + day.id + '-' + e.date; // deterministic → no cross-device dupes
+      if (tombSessions[reconId]) continue;            // a prior reconstruction was deleted
+      add('recon:' + dayKey, reconId, day, e);
+    }
+  }
+  if (!groups.size) return false;
+
+  for (const g of groups.values()) {
+    const s = {
+      id: g.id, dayId: g.day.id, date: g.date, status: 'ended',
+      done: [...g.exIds], note: '',
+      startedAt: g.min || nowISO(), endedAt: g.max || nowISO(),
+      snapshot: snapshotDay(g.day), lastModified: nowMs(), reconstructed: true,
+    };
+    state.sessions.push(s);
+    for (const e of g.entries) e.sessionId = s.id; // bind the orphaned sets to it
+  }
+  touch();
+  return true;
+}
+
 // Start a day. Resumes an existing active session for the same day+date if present.
 export function startSession(dayId, date) {
   date = date || todayISO();
@@ -447,7 +507,11 @@ export function startSession(dayId, date) {
           startedAt: nowISO(), endedAt: '', snapshot: snapshotDay(day), lastModified: nowMs() };
     state.sessions.push(s);
     touch();
-    saveLocal(); notify(); // kept local until the day is ended
+    // Persist to the cloud IMMEDIATELY, not just on "End Day". Entries push the moment they're
+    // logged, so if the session only lived locally a sync/reinstall would strand those entries
+    // with no workout to show them under. pushSessions saves locally first, then syncs.
+    pushSessions();
+    notify();
   }
   return s;
 }
@@ -469,13 +533,15 @@ export function sessionDoneIds(session) {
   const day = sessionDay(session);
   if (!day) return [];
   return day.exercises
-    .filter((e) => state.entries.some((en) => en.exId === e.id && en.date === session.date))
+    .filter((e) => state.entries.some((en) => en.exId === e.id &&
+      // Prefer the explicit session link; fall back to date match for pre-association entries.
+      (en.sessionId ? en.sessionId === session.id : en.date === session.date)))
     .map((e) => e.id);
 }
 
 export function setSessionNote(sessionId, note) {
   const s = getSession(sessionId); if (!s) return;
-  s.note = note; s.lastModified = nowMs(); touch(); saveLocal(); notify();
+  s.note = note; s.lastModified = nowMs(); touch(); pushSessions(); notify();
 }
 
 // "Machine taken" — swap an exercise to a different movement for THIS workout only.
@@ -487,7 +553,7 @@ export function swapSessionExercise(sessionId, exId, { name, db }) {
   if (!e) return;
   if (name != null) e.name = name;
   if (db !== undefined) e.db = db;
-  s.lastModified = nowMs(); touch(); saveLocal(); notify();
+  s.lastModified = nowMs(); touch(); pushSessions(); notify();
 }
 
 // End the day → freeze the derived done-list, mark ended, and PUSH to the Google Sheet.

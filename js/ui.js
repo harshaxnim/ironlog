@@ -349,6 +349,7 @@ function renderExerciseLog(sid, exId) {
     btn.disabled = true; btn.textContent = 'Adding…';
     await Store.addEntry(exId, {
       weights, effort: fd.get('effort'), date: fd.get('date'), note: fd.get('note'),
+      sessionId: sid, // bind the set to this workout session
     });
     // render() re-runs via subscription; form resets implicitly on re-render.
   });

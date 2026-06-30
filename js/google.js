@@ -4,7 +4,7 @@
 //   - "Entries" sheet:   tabular append-only log, one row per logged entry.
 import { CONFIG } from './config.js';
 
-const ENTRY_HEADER = ['id', 'exId', 'date', 'weight', 'unit', 'effort', 'note', 'createdAt', 'weights'];
+const ENTRY_HEADER = ['id', 'exId', 'date', 'weight', 'unit', 'effort', 'note', 'createdAt', 'weights', 'seed', 'sessionId'];
 const SESSION_HEADER = ['id', 'dayId', 'date', 'status', 'done', 'note', 'startedAt', 'endedAt', 'snapshot', 'lastModified'];
 
 function safeJSON(str, fallback) {
@@ -284,7 +284,7 @@ export async function readEntries() {
   await ensureSpreadsheet();
   return withAuth(async () => {
     const res = await gapi.client.sheets.spreadsheets.values.get({
-      spreadsheetId, range: `${CONFIG.ENTRIES_SHEET}!A2:I`,
+      spreadsheetId, range: `${CONFIG.ENTRIES_SHEET}!A2:K`,
     });
     const rows = res.result.values || [];
     return rows.filter((r) => r[0]).map((r) => ({
@@ -293,18 +293,25 @@ export async function readEntries() {
       unit: r[4] || CONFIG.DEFAULT_UNIT, effort: r[5] || '', note: r[6] || '',
       createdAt: r[7] || '',
       weights: safeJSON(r[8], r[3] != null && r[3] !== '' ? [Number(r[3])] : []),
+      // Newer columns; older sheets won't have them (seed → false, sessionId → '').
+      seed: r[9] === 'true' || r[9] === true || r[9] === 'TRUE',
+      sessionId: r[10] || '',
     }));
   });
 }
 
 function entryRow(e) {
-  return ENTRY_HEADER.map((k) => (k === 'weights' ? JSON.stringify(e.weights || []) : (e[k] ?? '')));
+  return ENTRY_HEADER.map((k) => {
+    if (k === 'weights') return JSON.stringify(e.weights || []);
+    if (k === 'seed') return e.seed ? 'true' : '';
+    return e[k] ?? '';
+  });
 }
 
 export async function appendEntry(entry) {
   await ensureSpreadsheet();
   return withAuth(() => gapi.client.sheets.spreadsheets.values.append({
-    spreadsheetId, range: `${CONFIG.ENTRIES_SHEET}!A:I`,
+    spreadsheetId, range: `${CONFIG.ENTRIES_SHEET}!A:K`,
     valueInputOption: 'RAW', insertDataOption: 'INSERT_ROWS',
     resource: { values: [entryRow(entry)] },
   }));
@@ -316,7 +323,7 @@ export async function rewriteEntries(entries) {
   const values = [ENTRY_HEADER, ...entries.map(entryRow)];
   return withAuth(async () => {
     await gapi.client.sheets.spreadsheets.values.clear({
-      spreadsheetId, range: `${CONFIG.ENTRIES_SHEET}!A:I`,
+      spreadsheetId, range: `${CONFIG.ENTRIES_SHEET}!A:K`,
     });
     await writeRange(CONFIG.ENTRIES_SHEET, values);
   });
