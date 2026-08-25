@@ -4,8 +4,13 @@ import * as Store from './store.js';
 import * as DB from './exercise-db.js';
 import * as G from './google.js';
 import { renderWeightChart } from './chart.js';
+import { setFieldsHTML, bindWeightPickers } from './weight-picker.js';
 
 let root, headerEl;
+
+// A half-filled "Add entry" form, kept per exercise so a re-render (background sync, saving a
+// note, the exercise DB finishing its load) never throws away weights you already dialled in.
+const entryDrafts = new Map(); // exId -> { weights:[], effort, note }
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -241,6 +246,7 @@ function exRow(e, dayId) {
       <div class="ex-meta">
         <div class="ex-name">${esc(e.name)}</div>
         <div class="muted small">${sub}</div>
+        ${e.note ? `<div class="ex-note muted small">📝 ${esc(e.note)}</div>` : ''}
       </div>
       <div class="chev">✎</div>
     </div>`;
@@ -254,12 +260,24 @@ function renderExerciseLog(sid, exId) {
   const exercise = day?.exercises.find((e) => e.id === exId);
   if (!exercise) return go('#/session/' + sid);
   const s = Store.getState();
+  const unit = s.settings.unit;
   const entries = Store.entriesFor(exId);
   // One weight field per set (rep scheme decides how many; default 4). Pre-fill each from
   // the matching set of the latest entry so you can pick up where you left off.
   const reps = (exercise.reps && exercise.reps.length) ? exercise.reps : [null, null, null, null];
   const lastEntry = entries[entries.length - 1];
   const lastWeights = lastEntry ? (lastEntry.weights && lastEntry.weights.length ? lastEntry.weights : [lastEntry.weight]) : [];
+  // Every weight ever logged here is offered in each set's dropdown, so odd values you
+  // actually use (47.5, a fixed-weight machine plate) stay one tap away.
+  const history = entries
+    .flatMap((e) => ((e.weights && e.weights.length) ? e.weights : [e.weight]))
+    .filter((w) => typeof w === 'number' && !Number.isNaN(w));
+  const draft = entryDrafts.get(exId);
+  const values = draft?.weights || lastWeights;
+  // Setup notes live on the day TEMPLATE (not the session snapshot), so they're always the
+  // current cues for the machine — not a frozen copy from when the workout started.
+  const live = Store.findExercise(exId);
+  const exNote = live?.exercise.note || '';
   const done = new Set(Store.sessionDoneIds(sess)).has(exId);
   const db = exercise.db ? DB.getById(exercise.db) : null;
   const img0 = db ? DB.imageUrl(db, 0) : null;
@@ -289,32 +307,36 @@ function renderExerciseLog(sid, exId) {
         <div class="add-wrap">
           <div class="panel-title">Add entry</div>
           <form id="entry-form" class="entry-form">
-            <label>Weight per set (${esc(s.settings.unit)})
+            <div class="field">Weight per set (${esc(unit)})
               <div class="set-fields">
-                ${reps.map((r, i) => `
-                  <div class="set-field">
-                    <span class="set-rep">${r != null ? '×' + esc(r) : 'Set ' + (i + 1)}</span>
-                    <input name="w${i}" type="number" step="0.5" inputmode="decimal" placeholder="–"
-                      value="${lastWeights[i] != null ? esc(lastWeights[i]) : ''}" />
-                  </div>`).join('')}
+                ${setFieldsHTML({ reps, values, history, unit })}
               </div>
-            </label>
+              <p class="muted small hint">Pick from the list, or ± one plate. “Custom…” types any number.</p>
+            </div>
             <label>Effort
               <div class="seg" role="group">
                 ${EFFORTS.map((ef, i) => `
-                  <input type="radio" id="eff-${ef.id}" name="effort" value="${ef.id}" ${i === 1 ? 'checked' : ''}/>
+                  <input type="radio" id="eff-${ef.id}" name="effort" value="${ef.id}" ${(draft?.effort || 'medium') === ef.id ? 'checked' : ''}/>
                   <label for="eff-${ef.id}" class="seg-opt eff-${ef.id}">${ef.emoji} ${ef.label}</label>`).join('')}
               </div>
             </label>
             <label>Date
               <input name="date" type="date" value="${isoDate(new Date())}" />
             </label>
-            <label>Note (optional)
-              <input name="note" type="text" placeholder="reps, how it felt…" />
+            <label>Note for this set (optional)
+              <input name="note" type="text" placeholder="how it felt, form cue, drop set…" value="${esc(draft?.note || '')}" />
             </label>
             <button class="primary" type="submit">Add entry</button>
           </form>
         </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Notes <span class="muted small">— setup &amp; cues, kept with the exercise</span></div>
+        ${live
+          ? `<textarea id="ex-note" rows="2" placeholder="e.g. seat 4 · pin 3 · wide grip · left knee, go slow">${esc(exNote)}</textarea>
+             <p class="muted small hint">Saved to the exercise — shows every time you train it. Log-specific notes go on the entry above.</p>`
+          : '<p class="muted">This exercise is no longer on the day template, so its notes can\'t be edited.</p>'}
       </div>
 
       <div class="panel">
@@ -343,18 +365,47 @@ function renderExerciseLog(sid, exId) {
   }
 
   const form = document.getElementById('entry-form');
+  const readForm = () => {
+    const fd = new FormData(form);
+    return {
+      weights: reps.map((_, i) => fd.get('w' + i)),
+      effort: fd.get('effort'),
+      note: fd.get('note') || '',
+      date: fd.get('date'),
+    };
+  };
+  // Keep the in-progress entry around: Store notifications (sync, note saves) re-render this view.
+  const saveDraft = () => { const d = readForm(); entryDrafts.set(exId, { weights: d.weights, effort: d.effort, note: d.note }); };
+  if (form) {
+    bindWeightPickers(form, { unit, onChange: saveDraft });
+    form.addEventListener('input', saveDraft);
+    form.addEventListener('change', saveDraft);
+  }
+
   form?.addEventListener('submit', async (ev) => {
     ev.preventDefault();
-    const fd = new FormData(form);
-    const weights = reps.map((_, i) => fd.get('w' + i));
-    if (!weights.some((w) => w !== '' && w != null)) { form.querySelector('input[name=w0]')?.focus(); return; }
+    const { weights, effort, date, note } = readForm();
+    if (!weights.some((w) => w !== '' && w != null)) {
+      form.querySelector('.set-field .num-select')?.focus();
+      return;
+    }
     const btn = form.querySelector('button[type=submit]');
     btn.disabled = true; btn.textContent = 'Adding…';
+    entryDrafts.delete(exId); // logged — the next render starts from this entry, not the draft
     await Store.addEntry(exId, {
-      weights, effort: fd.get('effort'), date: fd.get('date'), note: fd.get('note'),
+      weights, effort, date, note,
       sessionId: sid, // bind the set to this workout session
     });
     // render() re-runs via subscription; form resets implicitly on re-render.
+  });
+
+  // Setup notes: save on blur, and only when actually changed (each save re-renders the view).
+  const exNoteEl = document.getElementById('ex-note');
+  exNoteEl?.addEventListener('change', () => {
+    if (exNoteEl.value === exNote) return;
+    // silent: the textarea already shows the new text, and re-rendering mid-workout would
+    // eat the tap that follows (and reset the entry form you're standing in).
+    Store.updateExercise(live.day.id, exId, { note: exNoteEl.value.trim() }, { silent: true });
   });
 }
 
@@ -440,6 +491,8 @@ function renderSession(sessionId) {
 function sessRow(e, doneIds, sid) {
   const img = e.db ? DB.imageUrlById(e.db, 0) : null;
   const entries = Store.entriesFor(e.id);
+  // Setup notes come from the live template (the session snapshot is frozen at start).
+  const note = Store.findExercise(e.id)?.exercise.note || '';
   const last = entries[entries.length - 1];
   const sub = last && last.weight != null ? `Last: ${esc(last.weight)} ${esc(last.unit)}` : 'No entries yet';
   const done = doneIds.has(e.id);
@@ -450,6 +503,7 @@ function sessRow(e, doneIds, sid) {
       <div class="ex-meta">
         <div class="ex-name">${esc(e.name)}</div>
         <div class="muted small">${sub} · <span class="link-inline">Log ›</span></div>
+        ${note ? `<div class="ex-note muted small">📝 ${esc(note)}</div>` : ''}
       </div>
       <div class="chev">›</div>
     </div>`;
@@ -557,6 +611,8 @@ function editExerciseModal(dayId, exId) {
       </label>
       <label>Reps per set (comma separated — sets how many weight fields show)
         <input name="reps" value="${esc((exercise.reps || []).join(', '))}" placeholder="e.g. 15, 12, 10, 8" /></label>
+      <label>Notes (setup, cues, machine settings)
+        <textarea name="note" rows="2" placeholder="e.g. seat 4 · pin 3 · wide grip">${esc(exercise.note || '')}</textarea></label>
       <label class="check"><input type="checkbox" name="finisher" ${exercise.finisher ? 'checked' : ''}/> Finisher (sorts to bottom of the day)</label>
       <p class="muted small">Illustration: ${linked ? `${esc(linked.name)}.` : 'none linked.'} Use Swap to change the movement/illustration.</p>
       <button type="button" class="ghost" data-act="alts" data-day="${dayId}" data-ex="${exId}" style="width:100%">🔄 Swap / find alternatives</button>
@@ -574,6 +630,7 @@ function editExerciseModal(dayId, exId) {
       name: String(fd.get('name')).trim(),
       muscle: String(fd.get('muscle')),
       reps: parseReps(fd.get('reps')),
+      note: String(fd.get('note') || '').trim(),
       finisher: !!fd.get('finisher'),
     });
     closeModal();
@@ -597,6 +654,8 @@ function addExerciseModal(dayId) {
         </label>
         <label>Reps per set (comma separated)
           <input name="reps" placeholder="e.g. 12, 10, 8, 8" /></label>
+        <label>Notes (optional)
+          <textarea name="note" rows="2" placeholder="setup, cues, machine settings"></textarea></label>
         <label class="check"><input type="checkbox" name="finisher" /> Finisher (sorts to bottom)</label>
         <div class="modal-btns">
           <button type="button" class="ghost" data-act="close">Cancel</button>
@@ -631,6 +690,7 @@ function addExerciseModal(dayId) {
       name: String(fd.get('name')).trim(),
       muscle: String(fd.get('muscle')),
       reps: parseReps(fd.get('reps')),
+      note: String(fd.get('note') || '').trim(),
       finisher: !!fd.get('finisher'),
     });
     closeModal();

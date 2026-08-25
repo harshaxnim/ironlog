@@ -14,7 +14,12 @@ Drive/Sheets API (scope `drive.file`: the app only ever touches the one file it 
 - Per exercise: **graph on top** (top-set weight over time, points coloured by effort),
   **add-entry** form beside it (below on mobile), **history**, **illustration**, and a
   **🔄 Find alternatives** button (same primary muscle).
-- Each entry records **weight + effort (low/med/high) + date + note**.
+- **Weights are picked, not typed**: each set is `−` / dropdown / `+`. The dropdown lists
+  plate steps around your working weight plus everything you've ever logged for that
+  exercise; `±` nudges one plate (5 lbs / 2.5 kg); **Custom…** takes any number.
+- **Two kinds of note**: a **setup note** on the exercise (seat 4, pin 3, wide grip — sticks
+  around and shows on the exercise row every workout) and a **note per logged set**.
+- Each entry records **weight per set + effort (low/med/high) + date + note**.
 - **lbs/kg** switchable (lbs default).
 - Works offline (localStorage cache); syncs to Google Sheets when signed in.
 
@@ -77,6 +82,7 @@ js/
   config.js        client id, scopes, CDN urls, constants
   defaults.js      the 4 seeded days (names only)
   exercise-db.js   free-exercise-db: load/cache, lookup, images, alternatives, search
+  weight-picker.js per-set weight control (− / dropdown ladder / +, Custom…)
   google.js        GIS auth + Sheets/Drive storage
   store.js         state, seeding, localStorage cache + cloud sync, CRUD
   chart.js         Chart.js wrapper (weight-over-time)

@@ -106,6 +106,8 @@ button:disabled { opacity: .6; cursor: default; }
 .ex-row:hover { border-color: var(--accent); }
 .ex-meta { flex: 1; min-width: 0; }
 .ex-name { font-weight: 600; }
+/* setup note preview on an exercise row — one line, never pushes the row wider */
+.ex-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: .1rem; }
 .chev { color: var(--muted); font-size: 1.4rem; }
 .thumb { width: 46px; height: 46px; border-radius: 9px; background: #fff; overflow: hidden; display: grid; place-items: center; flex: none; font-size: 1.3rem; }
 .thumb img { width: 100%; height: 100%; object-fit: cover; }
@@ -126,20 +128,30 @@ button:disabled { opacity: .6; cursor: default; }
 /* forms */
 form label { display: block; margin-bottom: .7rem; font-size: .85rem; color: var(--muted); }
 /* 16px font-size on inputs prevents iOS Safari auto-zoom on focus (see DESIGN.md) */
-input, select { width: 100%; margin-top: .25rem; padding: .6rem .65rem; min-height: 44px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 9px; color: var(--text); font-family: inherit; font-size: 16px; }
-input:focus, select:focus { outline: none; border-color: var(--accent); }
+input, select, textarea { width: 100%; margin-top: .25rem; padding: .6rem .65rem; min-height: 44px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 9px; color: var(--text); font-family: inherit; font-size: 16px; }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+textarea { resize: vertical; line-height: 1.4; }
 .check { display: flex; align-items: center; gap: .5rem; }
 .check input { width: auto; margin: 0; }
+/* a labelled block that wraps several controls (a real <label> may only own one) */
+form .field { display: block; margin-bottom: .7rem; font-size: .85rem; color: var(--muted); }
+.hint { margin: .35rem 0 0; }
 
-/* per-set weight vector (the "four number fields beside each other") */
-.set-fields { display: flex; gap: .4rem; margin-top: .3rem; flex-wrap: wrap; }
-.set-field { flex: 1 1 0; min-width: 56px; display: flex; flex-direction: column; align-items: center; gap: .2rem; }
-.set-field .set-rep { font-size: .72rem; color: var(--muted); }
-.set-field input { width: 100%; margin-top: 0; text-align: center; padding: .5rem .25rem; }
+/* per-set weight vector — one row per set: [−] [dropdown] [+] (see DESIGN.md → Number picker) */
+.set-fields { display: flex; flex-direction: column; gap: .4rem; margin-top: .3rem; }
+.set-field { display: flex; align-items: center; gap: .5rem; }
+.set-field .set-rep { flex: 0 1 auto; white-space: nowrap; font-size: .78rem; color: var(--muted); }
+.set-field .set-rep b { color: var(--text); font-weight: 600; }
+.num-picker { flex: 1 1 9rem; display: flex; align-items: center; gap: .35rem; min-width: 0; }
+.num-picker .num-select, .num-picker .num-custom { flex: 1 1 auto; min-width: 0; margin-top: 0; text-align: center; text-align-last: center; font-weight: 600; padding: .5rem .3rem; }
+.num-picker .num-select { -webkit-appearance: none; appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%); background-position: right 12px center, right 7px center; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; padding-right: 1.4rem; }
+.step-btn { flex: 0 0 44px; width: 44px; min-height: 44px; display: flex; align-items: center; justify-content: center; background: var(--bg-2); border: 1px solid var(--line); border-radius: 9px; color: var(--text); font-size: 1.25rem; line-height: 1; cursor: pointer; }
+.step-btn:hover { background: var(--bg-3); border-color: var(--accent); }
+.step-btn:active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
 /* segmented effort control */
 .seg { display: flex; gap: .4rem; margin-top: .3rem; }
-.seg input { position: absolute; opacity: 0; pointer-events: none; }
+.seg input { position: absolute; opacity: 0; pointer-events: none; width: 1px; height: 1px; } /* 1px, not 100%: an absolutely-positioned full-width radio pushed the page into horizontal scroll */
 .seg-opt { flex: 1; min-height: 44px; display: flex; align-items: center; justify-content: center; text-align: center; padding: .5rem; border: 1px solid var(--line); border-radius: 9px; cursor: pointer; color: var(--text); font-size: .85rem; }
 .seg input:checked + .seg-opt { border-color: var(--accent); background: var(--bg-3); font-weight: 600; }
 .seg input:checked + .seg-opt.eff-low { border-color: var(--green); }

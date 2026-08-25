@@ -309,5 +309,84 @@ story('SYNC8', 'A logged set records its sessionId and stays out of done-by-date
   assert(e.sessionId === 'sess-xyz', 'addEntry persists the sessionId binding');
 }
 
+story('US24', 'Weights are picked, not typed: a dropdown per set, ± one plate, Custom… for the rest');
+{
+  await Store.resetToDefaults();
+  Store.setUnit('lbs');
+  const day = Store.getState().days[0];
+  const ex = day.exercises[0];
+  const s = Store.startSession(day.id, Store.todayISO());
+  location.hash = `#/session/${s.id}/ex/${ex.id}`; nav();
+
+  const field = app.querySelector('.set-field');
+  const sel = field.querySelector('.num-select');
+  const custom = field.querySelector('.num-custom');
+  const hidden = field.querySelector('input[name="w0"]');
+  const fire = (el, type) => el.dispatchEvent(new window.Event(type, { bubbles: true }));
+
+  assert(!!sel && sel.options.length > 5, 'set 1 is a dropdown of weights, not a bare number box');
+  assert([...sel.options].some((o) => o.value === '__custom'), 'the dropdown offers a “Custom…” escape hatch');
+  const seeded = Number(hidden.value);
+  assert(Number.isFinite(seeded) && sel.value === String(seeded), 'it opens pre-selected on the last weight logged');
+  assert(!!field.querySelector('.step-btn[data-step="1"]'), 'each set has ± nudge buttons');
+
+  field.querySelector('.step-btn[data-step="1"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  assert(Number(hidden.value) === seeded + 5, '+ adds one 5 lb plate');
+  field.querySelector('.step-btn[data-step="-1"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  assert(Number(hidden.value) === seeded, '− takes it straight back');
+
+  sel.value = String(seeded + 10); fire(sel, 'change');
+  assert(hidden.value === String(seeded + 10), 'picking an option sets the value the form submits');
+
+  sel.value = '__custom'; fire(sel, 'change');
+  assert(!custom.hidden && sel.hidden, '“Custom…” swaps in a free number input');
+  custom.value = '137.5'; fire(custom, 'blur');
+  assert(hidden.value === '137.5', 'a custom weight is committed');
+  assert(sel.value === '137.5' && [...sel.options].some((o) => o.value === '137.5'), 'and joins the dropdown, selected');
+  assert(custom.hidden && !sel.hidden, 'the dropdown comes back after committing');
+
+  app.querySelector('#entry-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  await new Promise((r) => setTimeout(r, 0));
+  const logged = Store.entriesFor(ex.id).pop();
+  assert(logged.weights[0] === 137.5, 'the picked weight is what gets logged');
+
+  story('US25', 'A half-filled entry form survives a re-render (background sync, note save)');
+  const sel2 = app.querySelector('.set-field .num-select');
+  sel2.value = '95'; sel2.dispatchEvent(new window.Event('change', { bubbles: true }));
+  Store.refresh(); // what a sync/notify does
+  assert(app.querySelector('.set-field input[name="w0"]').value === '95', 'the dialled-in weight is still there');
+
+  story('US26', 'Notes: setup cues stick to the exercise, and each logged set can carry its own note');
+  const noteEl = document.getElementById('ex-note');
+  assert(!!noteEl, 'the log page has a setup-notes field');
+  noteEl.value = 'seat 4 · pin 3';
+  noteEl.dispatchEvent(new window.Event('change', { bubbles: true }));
+  assert(Store.findExercise(ex.id).exercise.note === 'seat 4 · pin 3', 'the setup note saves onto the exercise template');
+  location.hash = `#/session/${s.id}`; nav();
+  assert(/seat 4 · pin 3/.test(app.innerHTML), 'and shows on the exercise row during the workout');
+
+  location.hash = `#/session/${s.id}/ex/${ex.id}`; nav();
+  assert(app.querySelector('#ex-note').value === 'seat 4 · pin 3', 'the note is there next time you train it');
+  const form = app.querySelector('#entry-form');
+  form.querySelector('input[name="note"]').value = 'felt strong, last rep grindy';
+  form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  await new Promise((r) => setTimeout(r, 0));
+  assert(Store.entriesFor(ex.id).pop().note === 'felt strong, last rep grindy', 'the set note is stored on the entry');
+  assert(/felt strong, last rep grindy/.test(app.innerHTML), 'and shows in the history row');
+
+  story('US27', 'Setup notes survive the sync round-trip and reach the edit modal');
+  const blob = JSON.parse(localStorage.getItem('ironlog.cache.v1'));
+  assert(blob.days[0].exercises[0].note === 'seat 4 · pin 3', 'the note is cached (so it syncs in the structure blob)');
+  setEdit(true);
+  location.hash = `#/day/${day.id}`; nav();
+  click(app.querySelector('.ex-row[data-act="edit-ex"]'));
+  const modalNote = document.querySelector('#edit-ex-form textarea[name="note"]');
+  assert(!!modalNote, 'the edit-exercise modal has a notes field');
+  modalNote.value = 'seat 5';
+  document.querySelector('#edit-ex-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  assert(Store.findExercise(ex.id).exercise.note === 'seat 5', 'editing the note from the modal saves it');
+  setEdit(false);
+}
+
 console.log(`\n${storyCount} user stories — ${failures ? failures + ' CHECK(S) FAILED ❌' : 'all checks passed ✅'}`);
 process.exit(failures ? 1 : 0);

@@ -18,7 +18,7 @@ export function todayISO(d = new Date()) {
 
 const state = {
   settings: { unit: CONFIG.DEFAULT_UNIT },
-  days: [],        // [{id, name, muscles[], exercises:[{id,name,muscle,db,finisher}]}]
+  days: [],        // [{id, name, muscles[], exercises:[{id,name,muscle,db,finisher,reps[],note}]}]
   entries: [],     // [{id, exId, date, weight, unit, effort, note, createdAt}]
   sessions: [],    // [{id, dayId, date, status, done[], note, startedAt, endedAt, lastModified}]
   // Sync bookkeeping. `pristine` = local holds only seeded defaults the user never touched
@@ -65,7 +65,7 @@ function buildDefaults() {
       const exId = uid();
       day.exercises.push({
         id: exId, name: e.name, muscle: e.muscle, db: e.db || null,
-        finisher: !!e.finisher, reps: (e.reps || []).slice(),
+        finisher: !!e.finisher, reps: (e.reps || []).slice(), note: e.note || '',
       });
       if (e.seed && e.seed.length) {
         const weights = e.seed.map((w) => (w == null || w === '' ? null : Number(w)));
@@ -375,18 +375,22 @@ export function deleteDay(dayId) {
   notify();
 }
 
-export function addExercise(dayId, { name, muscle, db = null, finisher = false, reps = [] }) {
+export function addExercise(dayId, { name, muscle, db = null, finisher = false, reps = [], note = '' }) {
   const d = state.days.find((x) => x.id === dayId); if (!d) return null;
-  const e = { id: uid(), name, muscle, db, finisher, reps };
+  // `note` = persistent setup cues (seat height, pin, grip) — distinct from a per-entry note.
+  const e = { id: uid(), name, muscle, db, finisher, reps, note };
   d.exercises.push(e);
   pushStructure(); notify();
   return e;
 }
-export function updateExercise(dayId, exId, patch) {
+// `silent` persists (local + cloud) without re-rendering. Used by the setup-notes field on the
+// log page: a blur-save that rebuilt the screen could swallow the very next tap ("Add entry").
+export function updateExercise(dayId, exId, patch, { silent = false } = {}) {
   const d = state.days.find((x) => x.id === dayId); if (!d) return;
   const e = d.exercises.find((x) => x.id === exId); if (!e) return;
   Object.assign(e, patch);
-  pushStructure(); notify();
+  pushStructure();
+  if (!silent) notify();
 }
 export function deleteExercise(dayId, exId) {
   const d = state.days.find((x) => x.id === dayId); if (!d) return;

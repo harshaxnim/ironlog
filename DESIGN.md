@@ -96,6 +96,17 @@ exactly one parent, so "back" is unambiguous.
 - **Panels** (`.panel`, `.chart-wrap`, `.add-wrap`) — titled content blocks.
 - **Segmented control** (`.seg`) — effort + unit pickers (radio-backed, keyboard
   accessible). Selected option borders in its semantic color.
+- **Number picker** (`.num-picker`) — how weights are entered, one row per set:
+  `−` · a real `<select>` ladder · `+`. A native select means phones open their own
+  wheel/list instead of asking for typed digits; `±` nudges one plate step (5 lbs / 2.5 kg);
+  **Custom…** swaps the select for a number input for anything off the ladder (once entered
+  it joins the list). A hidden `wN` input per set is what the form actually reads, so the
+  visible controls can change without touching submit logic. Ladder = plate steps around
+  your working weight for that exercise ∪ every weight ever logged for it.
+- **Notes** — two kinds, deliberately separate: a **setup note** on the exercise
+  (`textarea`, saved to the day template — seat height, pin, grip; previewed as a
+  one-line `.ex-note` on exercise rows) and a **per-entry note** on each logged set
+  (how it felt), shown in the history row.
 - **Modal** (`.overlay`/`.modal`) — centered, max 460px, scrolls; backdrop click closes.
 - **Illustration** (`.illus`) — start/end figures on white tiles + numbered instructions.
 

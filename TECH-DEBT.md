@@ -27,6 +27,14 @@ Exercises sort by muscle group (day order) then finishers. There's no drag-to-re
 Add an `order` field per exercise and a drag handle; `groupedExercises` already centralises
 sort logic.
 
+## 3b. The weight ladder assumes one global plate step
+The per-set dropdown (`weight-picker.js`) spaces its options by a fixed step — 5 lbs, or
+2.5 kg — around your working weight, and merges in every weight already logged for that
+exercise so nothing you actually use goes missing. Real gyms differ per machine (a stack
+in 15 lb jumps, microplates on a barbell). **To extend:** add an `increment` field per
+exercise (falling back to the unit default) and pass it to `stepFor`/`weightOptions`;
+everything else already flows from those two functions.
+
 ## 4. Unit conversion is not retroactive
 Switching lbs/kg only affects *new* entries; existing entries keep their logged unit
 (shown per-row). Intentional — avoids lossy round-tripping. A display-time converter
