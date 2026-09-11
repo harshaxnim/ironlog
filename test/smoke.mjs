@@ -99,6 +99,29 @@ story('US6', 'Each set field pre-fills with the latest entry\'s matching set');
 location.hash = `#/session/${sid}/ex/${exId}`; nav();
 assert(app.querySelector('input[name="w0"]').getAttribute('value') === '100', 'set 1 pre-filled from last entry');
 
+story('US21', 'Tapping a weight field opens the number keypad and selects the value (iOS)');
+let w0 = app.querySelector('input[name="w0"]');
+assert(w0.getAttribute('type') === 'text' && w0.getAttribute('inputmode') === 'decimal',
+  'weight field asks for the decimal keypad (text + inputmode, so the selection API works on iOS)');
+w0.focus();
+w0.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+assert(w0.selectionStart === 0 && w0.selectionEnd === w0.value.length,
+  'the tap selects the whole pre-filled weight, so typing replaces it');
+await new Promise((r) => setTimeout(r, 0));
+
+w0 = app.querySelector('input[name="w0"]'); // may have been re-rendered meanwhile
+w0.focus(); // focus alone (keyboard tab) selects too, once the browser has placed its caret
+await new Promise((r) => setTimeout(r, 0));
+assert(w0.selectionStart === 0 && w0.selectionEnd === w0.value.length, 'focusing selects the value');
+
+w0 = app.querySelector('input[name="w0"]');
+w0.value = '12,5kg';
+w0.dispatchEvent(new window.Event('input', { bubbles: true }));
+assert(w0.value === '12.5', 'non-numeric input is cleaned as you type (comma reads as a decimal point)');
+w0.value = '1.2.3';
+w0.dispatchEvent(new window.Event('input', { bubbles: true }));
+assert(w0.value === '1.23', 'only the first decimal separator survives');
+
 story('US7', 'Graph + history render once data exists');
 assert(/canvas id="chart"/.test(app.innerHTML), 'chart canvas renders');
 assert(/badge eff-high/.test(app.innerHTML), 'history shows the effort badge');

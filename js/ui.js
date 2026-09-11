@@ -294,7 +294,9 @@ function renderExerciseLog(sid, exId) {
                 ${reps.map((r, i) => `
                   <div class="set-field">
                     <span class="set-rep">${r != null ? '×' + esc(r) : 'Set ' + (i + 1)}</span>
-                    <input name="w${i}" type="number" step="0.5" inputmode="decimal" placeholder="–"
+                    <input name="w${i}" class="num-field" type="text" inputmode="decimal"
+                      enterkeyhint="done" autocomplete="off" autocorrect="off" spellcheck="false"
+                      pattern="[0-9]*[.,]?[0-9]*" aria-label="Set ${i + 1} weight" placeholder="–"
                       value="${lastWeights[i] != null ? esc(lastWeights[i]) : ''}" />
                   </div>`).join('')}
               </div>
@@ -346,7 +348,7 @@ function renderExerciseLog(sid, exId) {
   form?.addEventListener('submit', async (ev) => {
     ev.preventDefault();
     const fd = new FormData(form);
-    const weights = reps.map((_, i) => fd.get('w' + i));
+    const weights = reps.map((_, i) => normWeight(fd.get('w' + i)));
     if (!weights.some((w) => w !== '' && w != null)) { form.querySelector('input[name=w0]')?.focus(); return; }
     const btn = form.querySelector('button[type=submit]');
     btn.disabled = true; btn.textContent = 'Adding…';
@@ -741,6 +743,71 @@ function settingsModal() {
 }
 
 const cap = (s) => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+
+// --- numeric (weight) fields ----------------------------------------------
+// Weight fields are `text` + `inputmode="decimal"` rather than `type="number"`: iOS
+// opens the decimal keypad either way, but only text inputs expose the selection API —
+// which is what lets a tap select the pre-filled last weight so typing overwrites it.
+// The trade-off is that anything can be typed, so we clean the value as it is entered.
+const NUM_FIELD = 'input.num-field';
+
+// Digits with at most one decimal separator; a comma (common on non-US keypads) becomes a dot.
+function cleanNumeric(v) {
+  const s = String(v ?? '').replace(/[^\d.,]/g, '').replace(/,/g, '.');
+  const dot = s.indexOf('.');
+  return dot === -1 ? s : s.slice(0, dot + 1) + s.slice(dot + 1).replace(/\./g, '');
+}
+// '' for anything that isn't a usable number — Store treats that as "set not logged".
+function normWeight(v) {
+  const s = cleanNumeric(v);
+  return s !== '' && Number.isFinite(Number(s)) ? s : '';
+}
+function selectAll(el) {
+  try { el.setSelectionRange(0, el.value.length); } catch { el.select?.(); }
+}
+
+// Select on focus, then again on the tap that caused it: iOS places the caret on
+// touch-up, after focus, which would otherwise collapse the selection. Later taps are
+// left alone so the caret can still be positioned by hand.
+let tapToSelect = null;   // the field the current tap is focusing
+let selectTimer = 0;      // deferred select, so it lands after the browser's own caret
+const cancelSelect = () => { clearTimeout(selectTimer); selectTimer = 0; };
+document.addEventListener('focusin', (e) => {
+  const el = e.target;
+  if (!el.matches?.(NUM_FIELD)) return;
+  tapToSelect = el;
+  clearTimeout(selectTimer);
+  selectTimer = setTimeout(() => { if (document.activeElement === el) selectAll(el); }, 0);
+});
+document.addEventListener('focusout', (e) => { if (e.target === tapToSelect) tapToSelect = null; });
+document.addEventListener('click', (e) => {
+  const el = e.target;
+  if (el !== tapToSelect) return;
+  tapToSelect = null;
+  selectAll(el);
+});
+// Text inputs have no spinner, so keep the 0.5 step the old `type="number"` field gave
+// keyboard users.
+document.addEventListener('keydown', (e) => {
+  const el = e.target;
+  if (!el.matches?.(NUM_FIELD)) return;
+  cancelSelect(); // typing has started — a late select-all would eat the first digit
+  const dir = e.key === 'ArrowUp' ? 1 : e.key === 'ArrowDown' ? -1 : 0;
+  if (!dir) return;
+  e.preventDefault();
+  const next = Math.max(0, (Number(cleanNumeric(el.value)) || 0) + dir * 0.5);
+  el.value = String(Math.round(next * 100) / 100);
+});
+document.addEventListener('input', (e) => {
+  const el = e.target;
+  if (!el.matches?.(NUM_FIELD)) return;
+  cancelSelect();
+  const clean = cleanNumeric(el.value);
+  if (clean === el.value) return;
+  const caret = Math.max(0, (el.selectionStart ?? clean.length) - (el.value.length - clean.length));
+  el.value = clean;
+  try { el.setSelectionRange(caret, caret); } catch { /* not focused */ }
+});
 
 // --- global click handling (event delegation) -----------------------------
 document.addEventListener('click', async (e) => {

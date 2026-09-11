@@ -103,7 +103,10 @@ exactly one parent, so "back" is unambiguous.
 - [ ] `viewport` meta with `viewport-fit=cover` (set once in `index.html`).
 - [ ] Single-column at 360px wide with **no horizontal scroll**.
 - [ ] All tap targets ≥ 44px; primary action visible without scrolling.
-- [ ] Inputs 16px (no focus zoom). Native `type=number/date` keyboards used.
+- [ ] Inputs 16px (no focus zoom). Native keyboards used: `inputmode="decimal"` for
+      weights (`.num-field`), `type=date` for dates.
+- [ ] Tapping a weight field selects its whole value, so typing replaces the last
+      weight instead of appending to it.
 - [ ] Long text truncates or wraps — never overflows its container.
 - [ ] Safe-area insets respected top (header) and bottom (page padding).
 
