@@ -43,7 +43,11 @@ const nav = () => window.dispatchEvent(new window.Event('hashchange'));
 const click = (el) => { el.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true })); nav(); };
 const hashId = () => location.hash.split('/').pop();
 const goHome = () => { location.hash = '#/'; nav(); };
-const setEdit = (on) => { const b = header.querySelector('[data-act="toggle-edit"]'); if ((b.textContent.includes('Done')) !== on) click(b); };
+const setEdit = (on) => { // the toggle lives on the home page only
+  goHome();
+  const b = app.querySelector('[data-act="toggle-edit"]');
+  if ((b.textContent.includes('Done')) !== on) click(b);
+};
 
 // ---------------------------------------------------------------------------
 story('US1', 'First run seeds default days and shows them, signed out');
@@ -57,7 +61,8 @@ assert(header.querySelector('.auth-spinner'), 'header shows a loading spinner wh
 assert(!/Sign in to sync/.test(header.innerHTML), 'no "Sign in" shown while still checking the token');
 G.markAuthResolved();
 assert(!header.querySelector('.auth-spinner') && /Sign in to sync/.test(header.innerHTML), 'after resolve: spinner gone, shows Sign in');
-assert(header.querySelector('[data-act="toggle-edit"]'), 'has an Edit-mode toggle');
+assert(app.querySelector('[data-act="toggle-edit"]'), 'home page has an Edit-mode toggle');
+assert(!header.querySelector('[data-act="toggle-edit"]'), 'the toggle is NOT in the header (it only applies to home)');
 
 story('US2', 'In use mode, tapping a day card starts today\'s workout');
 setEdit(false);
@@ -87,12 +92,18 @@ assert(location.hash === `#/session/${sid}`, 'back goes to the workout, NOT an e
 story('US5', 'Logging weights auto-marks the exercise done (date matches session date)');
 location.hash = `#/session/${sid}/ex/${exId}`; nav();
 assert(app.querySelectorAll('.set-field input[name^="w"]').length >= 2, 'log form shows a vector of per-set weight fields');
-const dateInput = app.querySelector('input[name="date"]');
-assert(dateInput.value === Store.todayISO(), 'log date defaults to LOCAL today (matches session)');
-await Store.addEntry(exId, { weights: [100, 100, 100, 100], effort: 'high', date: dateInput.value });
+assert(!app.querySelector('input[name="date"]'), 'no per-entry date field — the workout carries the date');
+app.querySelectorAll('.set-field input').forEach((el) => { el.value = '100'; });
+app.querySelector('#eff-high').checked = true;
+app.querySelector('#entry-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+await new Promise((r) => setTimeout(r, 0));
+const logged = Store.entriesFor(exId).at(-1);
+assert(logged.date === Store.getSession(sid).date, 'the entry inherits the workout session\'s date');
+assert(logged.weights.join() === '100,100,100,100', 'every set field was logged');
 assert(new Set(Store.sessionDoneIds(Store.getSession(sid))).has(exId), 'exercise is now done after logging');
 location.hash = `#/session/${sid}`; nav();
 assert(/1\/\d+ done/.test(app.innerHTML), 'session progress shows 1 done');
+assert(app.querySelector('.bottom-actions [data-act="end-session"]'), 'End Day & Sync is repeated at the foot of the session page');
 assert(app.querySelector('.check-ind.on'), 'done indicator turned on');
 
 story('US6', 'Each set field pre-fills with the latest entry\'s matching set');
@@ -125,7 +136,50 @@ assert(w0.value === '1.23', 'only the first decimal separator survives');
 story('US7', 'Graph + history render once data exists');
 assert(/canvas id="chart"/.test(app.innerHTML), 'chart canvas renders');
 assert(/badge eff-high/.test(app.innerHTML), 'history shows the effort badge');
-assert(/100 · 100 · 100 · 100/.test(app.innerHTML), 'history shows the per-set weight vector');
+assert(app.querySelector('.hist-row .hist-weight').textContent.trim().startsWith('100'),
+  'history row shows the day average, not every set');
+
+story('US22', 'The graph plots each day\'s average inside a translucent min-max band');
+{
+  const { average } = await import(APP + 'chart.js');
+  assert(average([20, 30, 40]) === 30 && average([]) === null, 'average() means the logged sets');
+  await Store.addEntry(exId, { weights: [20, 30, 40], effort: 'low', date: '2020-01-02', sessionId: sid });
+  let cfg = null;
+  window.HTMLCanvasElement.prototype.getContext = () => ({}); // jsdom has no 2d context
+  class FakeChart { constructor(_ctx, c) { cfg = c; } destroy() {} }
+  globalThis.Chart = window.Chart = FakeChart;
+  location.hash = `#/session/${sid}/ex/${exId}`; nav();
+  const [maxDs, minDs, avgDs] = cfg.data.datasets;
+  const i = avgDs.data.indexOf(30); // the day seeded above: 20/30/40
+  assert(i >= 0, 'the line is the day average, not the top set');
+  assert(/Jan 2/.test(cfg.data.labels[i]), 'axis ticks are short dates, not raw ISO strings');
+  assert(minDs.data[i] === 20 && maxDs.data[i] === 40, 'the band edges are the day\'s lightest and heaviest set');
+  assert(maxDs.fill === '+1' && /rgba\(249,115,22,0\.14\)/.test(maxDs.backgroundColor),
+    'the max line fills down to the min line as a translucent band');
+  assert(avgDs.pointBackgroundColor.length === cfg.data.labels.length, 'average points stay coloured by effort');
+  globalThis.Chart = window.Chart = undefined;
+}
+
+story('US23', 'A history row shows the average and opens the full breakdown; delete confirms first');
+const noted = await Store.addEntry(exId, { weights: [50, 55, 60, 65], effort: 'medium', note: 'felt strong', date: '2020-02-03', sessionId: sid });
+location.hash = `#/session/${sid}/ex/${exId}`; nav();
+const row = [...app.querySelectorAll('.hist-row[data-act="entry"]')].find((r) => r.dataset.entry === noted.id);
+assert(!!row, 'every history entry is a tappable row');
+assert(row.querySelector('.hist-weight').textContent.trim().startsWith('57.5'), 'the row shows the day average');
+assert(/felt strong/.test(row.textContent), 'the row shows the note');
+row.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+const overlay = document.querySelector('.overlay');
+assert(!!overlay, 'tapping a row opens the detail overlay');
+assert(overlay.querySelectorAll('.set-line').length === 4, 'the overlay lists every set');
+assert(/50/.test(overlay.textContent) && /65/.test(overlay.textContent), 'per-set weights are in the overlay');
+assert(/felt strong/.test(overlay.querySelector('.entry-note').textContent), 'the note is shown in full');
+globalThis.confirm = () => false;
+overlay.querySelector('[data-act="del-entry"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+assert(Store.getState().entries.some((e) => e.id === noted.id), 'declining the confirm keeps the entry');
+globalThis.confirm = () => true;
+overlay.querySelector('[data-act="del-entry"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+assert(!Store.getState().entries.some((e) => e.id === noted.id), 'confirming deletes it');
+assert(!document.querySelector('.overlay'), 'the overlay closes after the delete');
 
 story('US18', 'A multi-set entry stores every set; top set drives the line/done');
 const exC = Store.sessionDay(Store.getSession(sid)).exercises[1];
@@ -158,8 +212,11 @@ const editCard = app.querySelector('.day-card[data-act="day"]');
 assert(!!editCard && /Edit mode/.test(app.innerHTML), 'edit mode: cards manage the day');
 click(editCard);
 assert(location.hash.startsWith('#/day/'), 'edit mode card opens the day template view');
+assert(!app.querySelector('[data-act="toggle-edit"]') && !header.querySelector('[data-act="toggle-edit"]'),
+  'no edit toggle outside the home page');
+click(app.querySelector('[data-act="home"]')); // "← All days"
 setEdit(false);
-assert(location.hash === '#/', 'turning edit off leaves the edit-only screen');
+assert(location.hash === '#/', 'back home, out of edit mode');
 assert(app.querySelector('.day-card[data-act="start-day"]'), 'cards start workouts again');
 
 story('US11', 'Edit mode: add day, add/edit/delete exercise, delete day');

@@ -23,6 +23,15 @@ export const CONFIG = {
   LS_KEY: 'ironlog.cache.v1',
 };
 
+// Compact date for axis ticks and list rows: "Sep 8", or "Sep 8, 2025" in another year.
+export function fmtShort(iso) {
+  const [y, m, d] = String(iso).split('-').map(Number);
+  if (!y || !m || !d) return String(iso);
+  const opts = { month: 'short', day: 'numeric' };
+  if (y !== new Date().getFullYear()) opts.year = 'numeric';
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, opts);
+}
+
 export const EFFORTS = [
   { id: 'low', label: 'Low', emoji: '🟢' },
   { id: 'medium', label: 'Medium', emoji: '🟡' },

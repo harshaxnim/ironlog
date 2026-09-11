@@ -11,10 +11,12 @@ Drive/Sheets API (scope `drive.file`: the app only ever touches the one file it 
 ## Features
 - **Days → exercises**, exercises grouped & sorted by muscle (finishers last).
 - Seeded with 4 default days (Chest & Triceps, Back & Biceps, Legs, Shoulders & Abs).
-- Per exercise: **graph on top** (top-set weight over time, points coloured by effort),
-  **add-entry** form beside it (below on mobile), **history**, **illustration**, and a
-  **🔄 Find alternatives** button (same primary muscle).
-- Each entry records **weight + effort (low/med/high) + date + note**.
+- Per exercise: **graph on top** (the day's average set over time inside a min–max band,
+  points coloured by effort), **add-entry** form beside it (below on mobile), **history**
+  (tap a row for every set + its note), **illustration**, and a **🔄 Find alternatives**
+  button (same primary muscle).
+- Each entry records **weight per set + effort (low/med/high) + note**, dated by the
+  workout it was logged in.
 - **lbs/kg** switchable (lbs default).
 - Works offline (localStorage cache); syncs to Google Sheets when signed in.
 
@@ -42,7 +44,7 @@ npm test
 
 **Manual — core app (no sign-in needed):** runs fully offline on localStorage.
 1. `npm start`, open http://localhost:8000.
-2. Open a day → tap an exercise → add an entry (weight + effort + date) → watch the graph
+2. Open a day → tap an exercise → add an entry (weight per set + effort) → watch the graph
    update, history fill in, and the illustration load.
 3. Try **🔄 Find alternatives**, add a day, add an exercise via search.
 
@@ -79,7 +81,7 @@ js/
   exercise-db.js   free-exercise-db: load/cache, lookup, images, alternatives, search
   google.js        GIS auth + Sheets/Drive storage
   store.js         state, seeding, localStorage cache + cloud sync, CRUD
-  chart.js         Chart.js wrapper (weight-over-time)
+  chart.js         Chart.js wrapper (average set over time + min–max band)
   ui.js            hash router + views + modals
   app.js           bootstrap
 ```

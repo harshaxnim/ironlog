@@ -1,9 +1,9 @@
 // View layer: hash router + rendering for the three screens and modals.
-import { EFFORTS } from './config.js';
+import { EFFORTS, fmtShort } from './config.js';
 import * as Store from './store.js';
 import * as DB from './exercise-db.js';
 import * as G from './google.js';
-import { renderWeightChart } from './chart.js';
+import { renderWeightChart, average } from './chart.js';
 
 let root, headerEl;
 
@@ -67,7 +67,6 @@ function renderHeader() {
     <div class="brand" data-act="home">🏋️ <span>Iron Log</span></div>
     <div class="head-right">
       ${sync}
-      <button class="ghost edit-toggle${editMode ? ' on' : ''}" data-act="toggle-edit" title="Toggle edit mode">${editMode ? '✓ Done' : '✎ Edit'}</button>
       <button class="ghost icon-only" data-act="settings" title="Settings" aria-label="Settings">⚙</button>
       ${G.authPending()
         ? '<span class="auth-spinner" title="Checking sign-in…" aria-label="Checking sign-in"></span>'
@@ -101,7 +100,10 @@ function renderHome() {
     <div class="view">
       <div class="row-between">
         <h1>Workout Days</h1>
-        ${editMode ? '<button class="ghost" data-act="add-day">+ Add Day</button>' : ''}
+        <div class="stack-btns">
+          <button class="ghost edit-toggle${editMode ? ' on' : ''}" data-act="toggle-edit" title="Toggle edit mode">${editMode ? '✓ Done editing' : '✎ Edit'}</button>
+          ${editMode ? '<button class="ghost" data-act="add-day">+ Add Day</button>' : ''}
+        </div>
       </div>
       <p class="muted small" style="margin-top:-.4rem">${editMode
         ? '✎ Edit mode — tap a day to manage its exercises. Turn off Edit to work out.'
@@ -280,9 +282,10 @@ function renderExerciseLog(sid, exId) {
 
       <div class="ex-grid">
         <div class="chart-wrap">
-          <div class="panel-title">Progress (top-set weight, ${esc(s.settings.unit)})</div>
+          <div class="panel-title">Progress (average set, ${esc(s.settings.unit)})</div>
           ${entries.some((e) => e.weight != null)
-            ? '<div class="chart-box"><canvas id="chart"></canvas></div>'
+            ? `<div class="chart-box"><canvas id="chart"></canvas></div>
+               <p class="muted small chart-key">Line = that day's average · band = lightest to heaviest set</p>`
             : '<div class="empty-chart">No data yet — add your first entry →</div>'}
         </div>
 
@@ -308,9 +311,6 @@ function renderExerciseLog(sid, exId) {
                   <label for="eff-${ef.id}" class="seg-opt eff-${ef.id}">${ef.emoji} ${ef.label}</label>`).join('')}
               </div>
             </label>
-            <label>Date
-              <input name="date" type="date" value="${isoDate(new Date())}" />
-            </label>
             <label>Note (optional)
               <input name="note" type="text" placeholder="reps, how it felt…" />
             </label>
@@ -324,7 +324,9 @@ function renderExerciseLog(sid, exId) {
         ${entries.length ? `
           <div class="history">
             ${entries.slice().reverse().map((e) => historyRow(e)).join('')}
-          </div>` : '<p class="muted">No entries yet.</p>'}
+          </div>
+          <p class="muted small hist-hint">Tap an entry for every set, its note and delete.</p>`
+          : '<p class="muted">No entries yet.</p>'}
       </div>
 
       <div class="panel">
@@ -353,27 +355,71 @@ function renderExerciseLog(sid, exId) {
     const btn = form.querySelector('button[type=submit]');
     btn.disabled = true; btn.textContent = 'Adding…';
     await Store.addEntry(exId, {
-      weights, effort: fd.get('effort'), date: fd.get('date'), note: fd.get('note'),
+      weights, effort: fd.get('effort'), date: sess.date, note: fd.get('note'),
       sessionId: sid, // bind the set to this workout session
     });
     // render() re-runs via subscription; form resets implicitly on re-render.
   });
 }
 
+// Logged sets for an entry, blanks included (old single-weight entries still work).
+function entryWeights(e) {
+  return (e.weights && e.weights.length) ? e.weights : (e.weight != null ? [e.weight] : []);
+}
+const loggedSets = (e) => entryWeights(e).filter((w) => typeof w === 'number' && !Number.isNaN(w));
+
+// A history row stays readable on a phone: date + note on the left, the day's average on
+// the right. Every set, the full note and Delete live in the detail overlay behind a tap.
 function historyRow(e) {
   const eff = EFFORTS.find((x) => x.id === e.effort);
-  const ws = (e.weights && e.weights.length) ? e.weights : (e.weight != null ? [e.weight] : []);
-  const wStr = ws.length
-    ? ws.map((w) => (w == null ? '–' : esc(w))).join(' · ') + ` <span class="muted">${esc(e.unit)}</span>`
-    : '—';
+  const avg = average(loggedSets(e));
   return `
-    <div class="hist-row">
-      <div class="hist-date">${esc(e.date)}</div>
-      <div class="hist-weight">${wStr}</div>
-      <div>${eff ? `<span class="badge eff-${eff.id}">${eff.emoji} ${eff.label}</span>` : ''}</div>
-      <div class="hist-note muted">${esc(e.note || '')}</div>
-      <button class="icon-btn" data-act="del-entry" data-entry="${e.id}" title="Delete">✕</button>
+    <div class="hist-row" data-act="entry" data-entry="${e.id}" title="Tap for every set">
+      <div class="hist-main">
+        <div class="hist-date">${esc(fmtShort(e.date))}</div>
+        ${e.note ? `<div class="hist-note muted small">${esc(e.note)}</div>` : ''}
+      </div>
+      <div class="hist-right">
+        <div class="hist-weight">${avg != null ? esc(avg) : '—'} <span class="muted">${esc(e.unit)}</span></div>
+        ${eff ? `<span class="badge eff-${eff.id}">${eff.emoji} ${eff.label}</span>` : ''}
+      </div>
+      <div class="chev">›</div>
     </div>`;
+}
+
+// The row's detail overlay: per-set weights, the note in full, and the delete.
+function entryModal(entryId) {
+  const e = Store.getState().entries.find((x) => x.id === entryId);
+  if (!e) return;
+  const ws = entryWeights(e);
+  const nums = loggedSets(e);
+  const eff = EFFORTS.find((x) => x.id === e.effort);
+  const reps = Store.findExercise(e.exId)?.exercise?.reps || [];
+  const unit = esc(e.unit);
+  openModal(`
+    <h2>${esc(fmtDate(e.date))}</h2>
+    <div class="chips">
+      ${nums.length ? `<span class="chip">Avg ${esc(average(nums))} ${unit}</span>
+        <span class="chip">${Math.min(...nums) === Math.max(...nums)
+          ? `All sets ${esc(Math.min(...nums))} ${unit}`
+          : `${esc(Math.min(...nums))}–${esc(Math.max(...nums))} ${unit}`}</span>` : ''}
+      ${eff ? `<span class="badge eff-${eff.id}">${eff.emoji} ${eff.label}</span>` : ''}
+    </div>
+    <div class="set-list">
+      ${ws.length ? ws.map((w, i) => `
+        <div class="set-line">
+          <span class="muted">${reps[i] != null ? '×' + esc(reps[i]) + ' reps' : 'Set ' + (i + 1)}</span>
+          <b>${w == null ? '<span class="muted">not logged</span>' : esc(w) + ' ' + unit}</b>
+        </div>`).join('') : '<p class="muted">No sets logged.</p>'}
+    </div>
+    <div class="entry-note">
+      <div class="panel-title">Note</div>
+      ${e.note ? `<p>${esc(e.note)}</p>` : '<p class="muted">No note for this entry.</p>'}
+    </div>
+    <div class="modal-btns">
+      <button class="danger ghost" data-act="del-entry" data-entry="${esc(e.id)}">Delete entry</button>
+      <button class="ghost" data-act="close">Close</button>
+    </div>`);
 }
 
 // --- session: a started workout day, check off exercises ------------------
@@ -432,6 +478,12 @@ function renderSession(sessionId) {
       <div class="panel">
         <div class="panel-title">Workout note</div>
         <input id="sess-note" type="text" value="${esc(sess.note || '')}" placeholder="how the session went…" />
+      </div>
+
+      <div class="bottom-actions">
+        ${ended
+          ? `<button class="ghost wide" data-act="reopen-session" data-session="${sess.id}">Reopen this workout</button>`
+          : `<button class="primary wide" data-act="end-session" data-session="${sess.id}">✓ End Day & Sync</button>`}
       </div>
     </div>`;
 
@@ -848,6 +900,7 @@ document.addEventListener('click', async (e) => {
     case 'del-session':
       if (confirm('Delete this workout?')) { await Store.deleteSession(t.dataset.session); go('#/'); }
       return;
+    case 'entry': return entryModal(t.dataset.entry);
     case 'edit-day': return editDayModal(t.dataset.day);
     case 'edit-ex': return editExerciseModal(t.dataset.day, t.dataset.ex);
     case 'alts': return altsModal(t.dataset.day, t.dataset.ex);
@@ -867,7 +920,7 @@ document.addEventListener('click', async (e) => {
       }
       return;
     case 'del-entry':
-      if (confirm('Delete this entry?')) Store.deleteEntry(t.dataset.entry);
+      if (confirm('Delete this entry? This cannot be undone.')) { closeModal(); Store.deleteEntry(t.dataset.entry); }
       return;
   }
 });

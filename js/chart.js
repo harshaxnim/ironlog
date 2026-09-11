@@ -1,9 +1,11 @@
-// Thin wrapper over Chart.js (loaded globally via CDN). For each workout day it plots every
-// set weight as a point (so the vertical spread shows the day's range) plus a line through
-// the top set to show progression. Points are coloured by the day's effort.
-import { EFFORTS } from './config.js';
+// Thin wrapper over Chart.js (loaded globally via CDN). For each workout day it plots the
+// average of that day's sets as the progression line, wrapped in a translucent min–max band
+// so the day's spread stays visible. Average points are coloured by the day's effort.
+import { EFFORTS, fmtShort } from './config.js';
 
 const EFFORT_COLOR = { low: '#22c55e', medium: '#f59e0b', high: '#ef4444', '': '#64748b' };
+const BAND = 'rgba(249,115,22,0.14)';
+const BAND_LINE = 'rgba(249,115,22,0.35)';
 
 let current = null;
 
@@ -11,6 +13,12 @@ let current = null;
 function setWeights(e) {
   const src = (e.weights && e.weights.length) ? e.weights : (e.weight != null ? [e.weight] : []);
   return src.filter((w) => typeof w === 'number' && !Number.isNaN(w));
+}
+
+// Mean of the logged sets, rounded to one decimal (weights are logged in 0.5 steps).
+export function average(ws) {
+  if (!ws.length) return null;
+  return Math.round((ws.reduce((a, b) => a + b, 0) / ws.length) * 10) / 10;
 }
 
 export function renderWeightChart(canvas, entries, unit) {
@@ -29,39 +37,39 @@ export function renderWeightChart(canvas, entries, unit) {
     .map((e) => ({ e, ws: setWeights(e) }))
     .filter((d) => d.ws.length);
   if (!days.length) return;
-  const labels = days.map((d) => d.e.date);
 
-  // Top-set line (progression).
-  const topData = days.map((d) => Math.max(...d.ws));
-  // Every individual set as a scatter point (vertical spread = that day's range).
-  const points = [];
-  days.forEach((d) => d.ws.forEach((w) => points.push({ x: d.e.date, y: w, _eff: d.e.effort })));
-  const pointColors = points.map((p) => EFFORT_COLOR[p._eff] ?? EFFORT_COLOR['']);
+  // Short tick labels keep the axis readable on a phone; the tooltip carries the full date.
+  const labels = days.map((d) => fmtShort(d.e.date));
+  const avgData = days.map((d) => average(d.ws));
+  const maxData = days.map((d) => Math.max(...d.ws));
+  const minData = days.map((d) => Math.min(...d.ws));
+  const pointColors = days.map((d) => EFFORT_COLOR[d.e.effort] ?? EFFORT_COLOR['']);
+
+  // The band is drawn as max filled down to min ('+1' = the dataset after this one), so the
+  // two edge lines must stay adjacent and in that order.
+  const edge = {
+    type: 'line', borderColor: BAND_LINE, borderWidth: 1, borderDash: [3, 3],
+    pointRadius: 0, pointHoverRadius: 0, tension: 0.25, order: 3,
+  };
 
   current = new Chart(canvas.getContext('2d'), {
     data: {
       labels,
       datasets: [
+        { ...edge, label: `Heaviest set (${unit})`, data: maxData, fill: '+1', backgroundColor: BAND },
+        { ...edge, label: `Lightest set (${unit})`, data: minData, fill: false },
         {
           type: 'line',
-          label: `Top set (${unit})`,
-          data: topData,
+          label: `Average set (${unit})`,
+          data: avgData,
           borderColor: '#f97316',
-          backgroundColor: 'rgba(249,115,22,0.10)',
-          pointRadius: 0,
           borderWidth: 2,
           tension: 0.25,
-          fill: true,
-          order: 2,
-        },
-        {
-          type: 'scatter',
-          label: 'Sets',
-          data: points,
-          backgroundColor: pointColors,
-          borderColor: pointColors,
+          fill: false,
           pointRadius: 4,
           pointHoverRadius: 6,
+          pointBackgroundColor: pointColors,
+          pointBorderColor: pointColors,
           order: 1,
         },
       ],
@@ -69,14 +77,24 @@ export function renderWeightChart(canvas, entries, unit) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: { display: false },
         tooltip: {
+          // One tooltip per day, hung off the average line: the band's own edge datasets
+          // would otherwise repeat the same numbers.
+          filter: (ctx) => ctx.datasetIndex === 2,
           callbacks: {
+            title: (items) => days[items[0].dataIndex].e.date,
             label: (ctx) => {
-              if (ctx.dataset.type === 'line') return `Top: ${ctx.parsed.y} ${unit}`;
-              const eff = EFFORTS.find((x) => x.id === ctx.raw._eff);
-              return `${ctx.parsed.y} ${unit}${eff ? ' · ' + eff.label : ''}`;
+              const i = ctx.dataIndex;
+              const eff = EFFORTS.find((x) => x.id === days[i].e.effort);
+              const sets = days[i].ws;
+              const range = minData[i] === maxData[i] ? `${minData[i]}` : `${minData[i]}–${maxData[i]}`;
+              return [
+                `Avg ${avgData[i]} ${unit}${eff ? ' · ' + eff.label : ''}`,
+                `Range ${range} ${unit} · ${sets.length} set${sets.length === 1 ? '' : 's'}`,
+              ];
             },
           },
         },
