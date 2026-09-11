@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Iron Log">
+  <title>Iron Log</title>
+  <!-- Android maskable icon: the mark sits inside the 80% safe circle, so no mask clips it. -->
+  <rect width="64" height="64" fill="#0f172a"/>
+  <g fill="#f97316">
+    <rect x="13" y="29.5" width="38" height="5" rx="2.5"/>
+    <rect x="19.5" y="22" width="7" height="20" rx="3"/>
+    <rect x="37.5" y="22" width="7" height="20" rx="3"/>
+  </g>
+  <g fill="#fb923c">
+    <rect x="13" y="26.5" width="5" height="11" rx="2.5"/>
+    <rect x="46" y="26.5" width="5" height="11" rx="2.5"/>
+  </g>
+</svg>

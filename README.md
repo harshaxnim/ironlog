@@ -75,6 +75,10 @@ The OAuth client ID lives in `js/config.js`.
 ```
 index.html         shell + Chart.js
 styles.css         dark, mobile-first
+favicon.ico        16/32/48 fallback for the bare /favicon.ico request
+site.webmanifest   name, theme colour and icon set (home-screen install)
+icons/             icon.svg (tab) · apple-touch-icon.png (iOS) · 192/512 + maskable PNGs
+                   *.svg are the sources; the PNGs are rendered from them
 js/
   config.js        client id, scopes, CDN urls, constants
   defaults.js      the 4 seeded days (names only)

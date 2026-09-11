@@ -104,6 +104,10 @@ unambiguous.
 - **Segmented control** (`.seg`) — effort + unit pickers (radio-backed, keyboard
   accessible). Selected option borders in its semantic color.
 - **Modal** (`.overlay`/`.modal`) — centered, max 460px, scrolls; backdrop click closes.
+- **App icon** (`icons/`) — an orange barbell on the `--bg` navy. `icon.svg` (rounded, for
+  browser tabs) and `icon-fullbleed.svg` / `icon-maskable.svg` (squared off, for iOS and
+  Android, which apply their own mask) are the sources; the PNGs and `favicon.ico` are
+  rendered from them, so edit the SVG and re-render rather than touching a PNG.
 - **Illustration** (`.illus`) — start/end figures on white tiles + numbered instructions;
   an intrinsic grid, so each figure fills the container width on a phone.
 

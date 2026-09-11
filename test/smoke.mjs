@@ -294,6 +294,26 @@ assert(G.restoreToken() === false && !G.isSignedIn(), 'expired/cleared token doe
 const meta = (over = {}) => ({ pristine: false, structUpdatedAt: 0, tombstones: { entries: {}, sessions: {} }, ...over });
 const ent = (id, over = {}) => ({ id, exId: 'x', date: '2026-06-01', weights: [10], weight: 10, createdAt: '2026-06-01T00:00:00.000Z', ...over });
 
+story('US24', 'The app ships a real icon set (browser tab, iOS home screen, manifest)');
+{
+  const fs = await import('node:fs');
+  const root = new URL('../', import.meta.url);
+  const html = fs.readFileSync(new URL('index.html', root), 'utf8');
+  const refs = [...html.matchAll(/<link[^>]+href="([^"]+)"/g)].map((m) => m[1])
+    .filter((h) => /favicon|icons\/|webmanifest/.test(h));
+  for (const want of ['favicon.ico', 'icons/icon.svg', 'icons/apple-touch-icon.png', 'site.webmanifest']) {
+    assert(refs.includes(want), `index.html links ${want}`);
+  }
+  assert(!/data:image/.test(html), 'the inline emoji placeholder icon is gone');
+  const manifest = JSON.parse(fs.readFileSync(new URL('site.webmanifest', root), 'utf8'));
+  const files = [...refs, ...manifest.icons.map((i) => i.src)];
+  const missing = files.filter((f) => !fs.existsSync(new URL(f, root)));
+  assert(!missing.length, 'every referenced icon file exists' + (missing.length ? ` — missing ${missing}` : ''));
+  assert(files.every((f) => !f.startsWith('/')), 'icon paths are relative (Pages serves the site from a subpath)');
+  assert(manifest.icons.some((i) => i.purpose === 'maskable'), 'a maskable icon is declared for Android');
+  assert(manifest.theme_color === '#0f172a', 'the manifest matches the app theme colour');
+}
+
 story('SYNC1', 'A locally-added (unsynced) entry survives a pull — never lost');
 {
   const local = { days: [{ id: 'd', exercises: [] }], settings: {}, entries: [ent('local-only')], sessions: [], meta: meta() };

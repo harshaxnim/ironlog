@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Iron Log">
+  <title>Iron Log</title>
+  <rect width="64" height="64" rx="14" fill="#0f172a"/>
+  <g fill="#f97316">
+    <rect x="4" y="28.5" width="56" height="7" rx="3.5"/>
+    <rect x="15" y="17" width="10" height="30" rx="4"/>
+    <rect x="39" y="17" width="10" height="30" rx="4"/>
+  </g>
+  <g fill="#fb923c">
+    <rect x="3.5" y="24" width="7" height="16" rx="3"/>
+    <rect x="53.5" y="24" width="7" height="16" rx="3"/>
+  </g>
+</svg>
